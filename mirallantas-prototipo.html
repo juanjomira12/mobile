@@ -1,0 +1,914 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiraLlantas — Prototipo</title>
+<style>
+/* ---- Tokens: misma paleta que la app Flutter ---- */
+:root{
+  --accent:#F5B800; --accent-dark:#D99F00; --on-accent:#1A1400;
+  --success:#22C55E; --warning:#F59E0B; --danger:#EF4444;
+  --bg:#0D1520; --surface:#162131; --surface-alt:#1C2839; --header:#16324F;
+  --on-header:#fff; --on-header-muted:rgba(255,255,255,.75);
+  --text:#F8FAFC; --text-2:#94A3B8; --text-3:#64748B;
+  --border:#25344A; --input:#1B2739; --tile:#1E2E44; --tile-fg:#8FB4E3;
+  --track:#2B3A50; --accent-soft:rgba(245,184,0,.12);
+  --success-soft:rgba(34,197,94,.18); --warning-soft:rgba(245,158,11,.18);
+  --danger-soft:rgba(239,68,68,.18); --link:#60A5FA;
+  --shadow:0 8px 18px rgba(0,0,0,.4);
+}
+[data-theme="light"]{
+  --bg:#EEF2F7; --surface:#fff; --surface-alt:#F6F9FC; --header:#1E3A5F;
+  --text:#0F172A; --text-2:#64748B; --text-3:#94A3B8;
+  --border:#E2E8F0; --input:#EFF3F8; --tile:#E8EFF8; --tile-fg:#2E5C8A;
+  --track:#DDE5EE; --accent-soft:rgba(245,184,0,.16);
+  --success-soft:rgba(34,197,94,.14); --warning-soft:rgba(245,158,11,.16);
+  --danger-soft:rgba(239,68,68,.12); --link:#1E5FA8;
+  --shadow:0 8px 18px rgba(0,0,0,.12);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:#0a0f18; color:var(--text);
+  font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+  display:flex; align-items:center; justify-content:center;
+}
+#root{width:100%;height:100%;display:flex;align-items:center;justify-content:center}
+/* ---- Marco de teléfono ---- */
+.phone{
+  width:100%; max-width:412px; height:100%; max-height:880px;
+  /* El tema se aplica en este contenedor, así que el color de texto
+     también debe salir de aquí para que lo hereden las pantallas. */
+  background:var(--bg); color:var(--text); position:relative; overflow:hidden;
+  display:flex; flex-direction:column;
+  border-radius:26px; box-shadow:0 24px 60px rgba(0,0,0,.55);
+}
+@media (max-width:520px){ .phone{border-radius:0;max-height:none} }
+/* ---- Cabecera ---- */
+.hdr{
+  background:var(--header); color:var(--on-header);
+  padding:14px 12px 16px 20px; display:flex; align-items:center; gap:10px;
+  flex:0 0 auto;
+}
+.hdr h1{font-size:20px;font-weight:700;margin:0;flex:1}
+.hdr .sub{font-size:13px;color:var(--on-header-muted);margin:0}
+.hdr .role{font-size:11px;font-weight:800;letter-spacing:1.2px;color:var(--accent)}
+.icon-btn{
+  background:rgba(255,255,255,.12); border:0; color:inherit; cursor:pointer;
+  width:40px;height:40px;border-radius:12px;display:grid;place-items:center;font-size:18px;
+}
+.back{background:transparent;font-size:20px;width:34px}
+/* ---- Cuerpo con scroll y barra fija ---- */
+.body{flex:1 1 auto; overflow-y:auto; padding:16px 16px 24px}
+.tabbar{
+  flex:0 0 auto; display:flex; background:var(--surface);
+  border-top:1px solid var(--border); padding:6px 0 8px;
+}
+.tabbar button{
+  flex:1; background:none;border:0;cursor:pointer; color:var(--text-2);
+  font-size:11px; display:grid; gap:3px; justify-items:center; padding:4px 0;
+}
+.tabbar button.on{color:var(--accent);font-weight:700}
+.tabbar .ico{font-size:19px;line-height:1}
+</style>
+<style>
+/* ---- Piezas reutilizables ---- */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:16px}
+.card.tap{cursor:pointer}
+.card.tap:hover{border-color:var(--accent)}
+.card.hi{border:1.5px solid var(--accent);border-radius:18px}
+.label{font-size:12px;font-weight:700;letter-spacing:1.1px;color:var(--text-3);margin:0 0 12px}
+.muted{color:var(--text-2);font-size:13px;margin:0}
+.small{color:var(--text-3);font-size:12px;margin:0}
+.title{font-size:16px;font-weight:600;margin:0}
+.big{font-size:30px;font-weight:800;letter-spacing:-.5px;margin:0}
+.row{display:flex;align-items:center;gap:10px}
+.between{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.stack>*+*{margin-top:12px}
+.chip{display:inline-block;padding:5px 10px;border-radius:20px;font-size:12px;font-weight:700}
+.chip.success{color:var(--success);background:var(--success-soft)}
+.chip.warning{color:var(--warning);background:var(--warning-soft)}
+.chip.danger{color:var(--danger);background:var(--danger-soft)}
+.chip.neutral{color:var(--text-2);background:var(--surface-alt)}
+.bar{height:8px;border-radius:8px;background:var(--track);overflow:hidden}
+.bar>span{display:block;height:100%;background:var(--accent)}
+.bar.navy>span{background:var(--header)}
+.bar.red>span{background:var(--danger)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.tile{
+  background:var(--surface);border:1px solid var(--border);border-radius:16px;
+  padding:16px;cursor:pointer;text-align:left;color:inherit;font:inherit;
+}
+.tile:hover{border-color:var(--accent)}
+.tile.standout{border-color:var(--accent)}
+.tile .ico{
+  width:46px;height:46px;border-radius:12px;background:var(--tile);
+  color:var(--tile-fg);display:grid;place-items:center;font-size:20px;margin-bottom:14px;
+}
+.tile.standout .ico{background:var(--accent-soft);color:var(--accent-dark)}
+.tile b{font-size:16px;font-weight:600}
+/* ---- Formularios ---- */
+label.f{display:block;font-size:13px;font-weight:600;color:var(--text-2);margin:0 0 8px}
+.input{
+  width:100%;background:var(--input);border:1px solid var(--border);border-radius:12px;
+  padding:15px 16px;color:var(--text);font:inherit;
+}
+.input::placeholder{color:var(--text-3)}
+.input:focus{outline:none;border-color:var(--accent)}
+.field+.field{margin-top:16px}
+.cols{display:flex;gap:12px}
+.cols>*{flex:1}
+.btn{
+  width:100%;border:0;border-radius:14px;padding:17px 16px;cursor:pointer;
+  font-size:16px;font-weight:700;background:var(--accent);color:var(--on-accent);
+}
+.btn:disabled{background:var(--track);color:var(--text-3);cursor:not-allowed}
+.btn.ghost{background:transparent;border:1px solid var(--border);color:var(--text)}
+.btn.small{padding:11px 16px;font-size:14px;width:auto;border-radius:12px}
+.seg{
+  flex:1;background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:15px 8px;cursor:pointer;color:var(--text-2);font:inherit;font-weight:500;
+}
+.seg.on{background:var(--surface-alt);border:1.6px solid var(--header);color:var(--text);font-weight:700}
+.seg.accent.on{border-color:var(--accent);color:var(--accent-dark)}
+.drop{
+  border:1.5px dashed var(--border);border-radius:14px;background:var(--surface-alt);
+  padding:26px;text-align:center;cursor:pointer;color:var(--text-2);
+}
+.sheet-bg{position:absolute;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:flex-end}
+.sheet{
+  background:var(--bg);border:1px solid var(--border);border-radius:22px 22px 0 0;
+  padding:16px;width:100%;max-height:90%;overflow-y:auto;
+}
+.toast{
+  position:absolute;left:16px;right:16px;bottom:80px;background:var(--surface-alt);
+  border:1px solid var(--border);border-radius:12px;padding:12px 14px;font-size:14px;
+  box-shadow:var(--shadow);
+}
+.logo{
+  width:84px;height:84px;border-radius:24px;background:var(--header);
+  display:grid;place-items:center;margin:0 auto;box-shadow:var(--shadow);font-size:38px;
+}
+.link{background:none;border:0;color:var(--link);text-decoration:underline;cursor:pointer;font:inherit;font-size:13px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.4/babel.min.js"></script>
+<script type="text/babel">
+const {useState, useMemo} = React;
+
+/* ============ Datos mock (los mismos de la app Flutter) ============ */
+const cop = n => '$ ' + Math.abs(n).toLocaleString('es-CO').replace(/,/g, '.');
+
+const PRODUCTS = [
+  {name:'Michelin Energy XM2', brand:'Michelin', size:'205/65R15', price:280000, retread:false, stock:24},
+  {name:'Bridgestone Turanza T005', brand:'Bridgestone', size:'225/45R17', price:445000, retread:false, stock:12},
+  {name:'Goodyear EfficientGrip', brand:'Goodyear', size:'195/60R15', price:265000, retread:false, stock:18},
+  {name:'Pirelli Scorpion ATR', brand:'Pirelli', size:'265/70R16', price:690000, retread:false, stock:6},
+  {name:'Reencauche liso de carga', brand:'MiraLlantas', size:'295/80R22.5', price:150000, retread:true, stock:30},
+  {name:'Reencauche mixto tracción', brand:'MiraLlantas', size:'11R22.5', price:165000, retread:true, stock:15},
+  {name:'Reencauche urbano', brand:'MiraLlantas', size:'215/75R17.5', price:132000, retread:true, stock:21},
+  {name:'Instalación y balanceo', brand:'Servicio', size:'Por llanta', price:20000, retread:false, stock:99},
+];
+
+const QUOTES = [
+  {code:'COT-2025-001', date:'15 jul. 2025', client:'Carlos Ramírez', type:'Llanta nueva',
+   pay:'Crédito', status:'Aprobada', tone:'success',
+   items:[{d:'Llanta 205/65R15 Michelin', q:4, p:280000},{d:'Instalación y balanceo', q:4, p:20000}]},
+  {code:'COT-2025-002', date:'22 jul. 2025', client:'Transportes del Valle', type:'Reencauche',
+   pay:'Contado', status:'Pendiente', tone:'warning',
+   items:[{d:'Reencauche 295/80R22.5', q:3, p:150000}]},
+  {code:'COT-2025-003', date:'3 ago. 2025', client:'Carlos Ramírez', type:'Llanta nueva',
+   pay:'Crédito', status:'Rechazada', tone:'danger',
+   items:[{d:'Llanta 225/45R17 Bridgestone', q:2, p:445000}]},
+];
+const quoteTotal = q => q.items.reduce((s,i) => s + i.q * i.p, 0);
+
+const CREDITS = [
+  {code:'CRD-2025-001', status:'Al día', tone:'success', due:'30 sep. 2025', start:'1 abr. 2025',
+   total:4500000, paid:2100000, fee:350000,
+   payments:[{a:350000,d:'1 ago. 2025',m:'Transferencia'},{a:350000,d:'1 jul. 2025',m:'Transferencia'},
+             {a:200000,d:'3 jun. 2025',m:'Efectivo'},{a:150000,d:'1 jun. 2025',m:'Transferencia'}]},
+  {code:'CRD-2025-002', status:'Vencido', tone:'danger', due:'15 ago. 2025', start:'15 feb. 2025',
+   total:1800000, paid:1800000, fee:300000,
+   payments:[{a:300000,d:'15 jul. 2025',m:'Nequi'},{a:300000,d:'15 jun. 2025',m:'Nequi'}]},
+];
+
+const DELIVERIES = [
+  {code:'ENT-001', address:'Cra. 45 #80-23, Medellín', date:'18 jul. 2025', delivered:'18 jul. 2025',
+   status:'Entregado', tone:'success', quote:'COT-2025-001'},
+  {code:'ENT-002', address:'Cl. 10 #5-67, El Poblado', date:'28 ago. 2025', delivered:null,
+   status:'Programado', tone:'warning', quote:'COT-2025-002'},
+  {code:'ENT-003', address:'Av. El Dorado #68C-61, Bogotá', date:'10 ago. 2025', delivered:null,
+   status:'Cancelado', tone:'danger', quote:'COT-2025-003'},
+];
+
+const METHODS = ['Transferencia','Efectivo','Nequi','Daviplata'];
+
+const PROFILES = {
+  usuario: {name:'Carlos Ramírez', doc:'1023456789', email:'carlos.ramirez@email.com',
+            phone:'300 456 7890', address:'Cra. 45 #80-23, Medellín, Antioquia'},
+  admin:   {name:'Laura González', doc:'43876521', email:'laura.gonzalez@mirallantas.com',
+            phone:'301 987 6543', address:'Cl. 10 #43-15, Medellín, Antioquia'},
+};
+
+/* ============ Piezas comunes ============ */
+const Chip = ({label, tone}) => <span className={'chip ' + tone}>{label}</span>;
+
+const Header = ({title, onBack, theme, toggleTheme, subtitle, role}) => (
+  <div className="hdr">
+    {onBack && <button className="icon-btn back" onClick={onBack} title="Volver">←</button>}
+    <div style={{flex:1}}>
+      {subtitle && <p className="sub">{subtitle}</p>}
+      <h1>{title}</h1>
+      {role && <div className="role">{role}</div>}
+    </div>
+    <button className="icon-btn" onClick={toggleTheme} title="Cambiar tema">
+      {theme === 'dark' ? '☀' : '☾'}
+    </button>
+  </div>
+);
+
+const TABS = [
+  {ico:'⌂', label:'Inicio', screen:'home'},
+  {ico:'🧾', label:'Cotizaciones', screen:'quotes'},
+  {ico:'💳', label:'Créditos', screen:'credits'},
+  {ico:'🚚', label:'Entregas', screen:'deliveries'},
+  {ico:'👤', label:'Perfil', screen:'profile'},
+];
+
+/* La barra vive fuera del área con scroll, así que nunca desaparece. */
+const TabBar = ({active, go}) => (
+  <nav className="tabbar">
+    {TABS.map(t => (
+      <button key={t.screen} className={active === t.screen ? 'on' : ''}
+              onClick={() => go(t.screen)}>
+        <span className="ico">{t.ico}</span>{t.label}
+      </button>
+    ))}
+  </nav>
+);
+
+/* ============ Login ============ */
+const Login = ({onEnter, theme, toggleTheme}) => {
+  const [role, setRole] = useState('usuario');
+  return (
+    <>
+      <div style={{display:'flex',justifyContent:'flex-end',padding:8}}>
+        <button className="icon-btn" style={{background:'transparent',color:'var(--text-2)'}}
+                onClick={toggleTheme} title="Cambiar tema">{theme === 'dark' ? '☀' : '☾'}</button>
+      </div>
+      <div className="body" style={{display:'flex',alignItems:'center'}}>
+        <div className="card" style={{width:'100%',padding:'32px 24px 28px',borderRadius:20}}>
+          <div className="logo">◎</div>
+          <h2 style={{textAlign:'center',fontSize:32,fontWeight:800,margin:'20px 0 6px'}}>MiraLlantas</h2>
+          <p className="muted" style={{textAlign:'center',marginBottom:28}}>Gestión de llantas y reencauche</p>
+
+          <div className="field">
+            <label className="f">Correo electrónico</label>
+            <input className="input" placeholder="correo@ejemplo.com" />
+          </div>
+          <div className="field">
+            <label className="f">Contraseña</label>
+            <input className="input" type="password" placeholder="••••••••" />
+          </div>
+          <div style={{textAlign:'right',margin:'10px 0 18px'}}>
+            <button className="link">¿Olvidaste tu contraseña?</button>
+          </div>
+
+          <label className="f">Acceder como</label>
+          <div className="cols" style={{marginBottom:24}}>
+            {['usuario','admin'].map(r => (
+              <button key={r} className={'seg accent ' + (role === r ? 'on' : '')}
+                      onClick={() => setRole(r)}>
+                {r === 'usuario' ? 'Usuario' : 'Administrador'}
+              </button>
+            ))}
+          </div>
+          <button className="btn" onClick={() => onEnter(role)}>Iniciar sesión</button>
+        </div>
+      </div>
+    </>
+  );
+};
+
+/* ============ Dashboards ============ */
+const MODULES = role => [
+  {ico:'🧾', label:'Cotizaciones', screen:'quotes'},
+  {ico:'💳', label:'Créditos', screen:'credits'},
+  {ico:'💵', label:'Abonos', screen:'payments'},
+  {ico:'🚚', label:'Entregas', screen:'deliveries'},
+  ...(role === 'admin' ? [{ico:'♻', label:'Reencauches', screen:'retreads'}] : []),
+  {ico:'👤', label:'Mi Perfil', screen:'profile'},
+  {ico:'⇥', label:'Cerrar sesión', screen:'logout', standout:true},
+];
+
+const Home = ({role, go}) => (
+  <div className="body">
+    {role === 'usuario' ? (
+      <div className="card hi" style={{padding:20}}>
+        <div className="between">
+          <div>
+            <p className="muted">Saldo en crédito disponible</p>
+            <p className="big" style={{marginTop:6}}>{cop(2400000)}</p>
+          </div>
+          <div style={{background:'var(--accent)',color:'var(--on-accent)',borderRadius:12,
+                       padding:10,fontSize:20,lineHeight:1}}>▤</div>
+        </div>
+        <div className="between" style={{marginTop:18}}>
+          <p className="small">Usado: {cop(2100000)}</p>
+          <p className="small">Cupo total: {cop(4500000)}</p>
+        </div>
+        <div className="bar" style={{marginTop:8}}><span style={{width:'47%'}} /></div>
+        <p className="small" style={{marginTop:8,color:'var(--accent-dark)',fontWeight:600}}>
+          47% del cupo utilizado</p>
+      </div>
+    ) : (
+      <div className="card hi" style={{padding:18}}>
+        <p className="label">RESUMEN OPERATIVO DEL DÍA</p>
+        <div className="grid">
+          {[['5','Pedidos pendientes',false],['3','Entregas hoy',false],
+            ['2','Créditos por vencer',true],['1','Nuevos clientes',false]].map(([n,l,hot]) => (
+            <div key={l} style={{background:'var(--surface-alt)',border:'1px solid var(--border)',
+                                 borderRadius:14,padding:'10px 14px'}}>
+              <p className="big" style={{fontSize:26,color:hot ? 'var(--danger)' : 'var(--text)'}}>{n}</p>
+              <p className="small">{l}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
+
+    <p className="label" style={{margin:'24px 0 12px'}}>MÓDULOS</p>
+    <div className="grid">
+      {MODULES(role).map(m => (
+        <button key={m.label} className={'tile ' + (m.standout ? 'standout' : '')}
+                onClick={() => go(m.screen)}>
+          <div className="ico">{m.ico}</div>
+          <b>{m.label}</b>
+        </button>
+      ))}
+    </div>
+  </div>
+);
+
+/* ============ Cotizaciones ============ */
+const Quotes = ({go, open}) => (
+  <div className="body">
+    <div className="between" style={{marginBottom:14}}>
+      <p className="label" style={{margin:0}}>{QUOTES.length} COTIZACIONES</p>
+      <button className="btn small" onClick={() => go('newQuote')}>+ Nueva</button>
+    </div>
+    <div className="stack">
+      {QUOTES.map(q => (
+        <div key={q.code} className="card tap" onClick={() => open(q)}>
+          <div className="between">
+            <div>
+              <p className="title">{q.code}</p>
+              <p className="small" style={{marginTop:4}}>{q.date} · {q.client}</p>
+              <p className="small">{q.items.length} {q.items.length === 1 ? 'ítem' : 'ítems'} · {q.pay} · {q.type}</p>
+              <div style={{marginTop:10}}><Chip label={q.status} tone={q.tone} /></div>
+            </div>
+            <div className="row">
+              <b style={{fontSize:17}}>{cop(quoteTotal(q))}</b>
+              <span style={{color:'var(--text-3)'}}>›</span>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+const QuoteDetail = ({quote}) => (
+  <div className="body">
+    <div className="card">
+      <div className="between">
+        <p className="muted">{quote.date}</p>
+        <Chip label={quote.status} tone={quote.tone} />
+      </div>
+      {[['Cliente',quote.client],['Tipo',quote.type],['Pago',quote.pay]].map(([k,v]) => (
+        <div key={k} className="between" style={{marginTop:10}}>
+          <p className="muted">{k}</p><p className="title">{v}</p>
+        </div>
+      ))}
+    </div>
+    <p className="label" style={{margin:'24px 0 12px'}}>ÍTEMS DE LA COTIZACIÓN</p>
+    <div className="card">
+      {quote.items.map(i => (
+        <div key={i.d} className="between" style={{borderBottom:'1px solid var(--border)',padding:'10px 0'}}>
+          <div style={{flex:1}}>
+            <p style={{margin:0}}>{i.d}</p>
+            <p className="small">{i.q} × {cop(i.p)}</p>
+          </div>
+          <b>{cop(i.q * i.p)}</b>
+        </div>
+      ))}
+      <div className="between" style={{marginTop:14}}>
+        <p className="title">Total</p>
+        <b style={{fontSize:20,color:'var(--link)'}}>{cop(quoteTotal(quote))}</b>
+      </div>
+    </div>
+  </div>
+);
+
+/* Catálogo + formulario unificado (llanta nueva y reencauche comparten campos). */
+const NewQuote = ({onDone, toast}) => {
+  const [query, setQuery] = useState('');
+  const [cart, setCart] = useState([]);          // {product, qty}
+  const [pay, setPay] = useState('Crédito');
+  const [sheet, setSheet] = useState(false);
+
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return PRODUCTS;
+    return PRODUCTS.filter(p =>
+      (p.name + ' ' + p.brand + ' ' + p.size + ' ' + (p.retread ? 'reencauche' : 'llanta nueva'))
+        .toLowerCase().includes(q));
+  }, [query]);
+
+  const add = (product, qty = 1) => {
+    setCart(prev => {
+      const found = prev.find(l => l.product.name === product.name);
+      if (found) return prev.map(l => l === found ? {...l, qty: l.qty + qty} : l);
+      return [...prev, {product, qty}];
+    });
+    toast(product.name + ' agregado');
+  };
+  const dec = name => setCart(prev => prev
+    .map(l => l.product.name === name ? {...l, qty: l.qty - 1} : l)
+    .filter(l => l.qty > 0));
+
+  const total = cart.reduce((s,l) => s + l.product.price * l.qty, 0);
+  const qtyOf = name => (cart.find(l => l.product.name === name) || {}).qty || 0;
+
+  return (
+    <div className="body">
+      <input className="input" placeholder="🔎  Buscar producto, marca o medida"
+             value={query} onChange={e => setQuery(e.target.value)} />
+
+      <div className="between" style={{margin:'20px 0 12px'}}>
+        <p className="label" style={{margin:0}}>PRODUCTOS DISPONIBLES</p>
+        <p className="label" style={{margin:0}}>{results.length}</p>
+      </div>
+
+      <div className="stack">
+        {results.length === 0 && <p className="muted">No hay productos que coincidan con la búsqueda.</p>}
+        {results.map(p => {
+          const q = qtyOf(p.name);
+          return (
+            <div key={p.name} className="card" style={q ? {borderColor:'var(--accent)'} : null}>
+              <div className="row" style={{alignItems:'flex-start'}}>
+                <div className="tile ico" style={{width:44,height:44,borderRadius:12,background:'var(--tile)',
+                     color:'var(--tile-fg)',display:'grid',placeItems:'center',padding:0,border:0,margin:0}}>
+                  {p.retread ? '♻' : '◎'}
+                </div>
+                <div style={{flex:1}}>
+                  <p className="title">{p.name}</p>
+                  <p className="small">{p.brand} · {p.size} · stock {p.stock}</p>
+                  <div className="row" style={{marginTop:8,flexWrap:'wrap'}}>
+                    <Chip label={p.retread ? 'Reencauche' : 'Llanta nueva'} tone="neutral" />
+                    <b style={{fontSize:15}}>{cop(p.price)}</b>
+                  </div>
+                </div>
+                {q ? (
+                  <div className="row">
+                    <button className="btn ghost small" onClick={() => dec(p.name)}>−</button>
+                    <b>{q}</b>
+                    <button className="btn small" onClick={() => add(p)}>+</button>
+                  </div>
+                ) : (
+                  <button className="btn small" onClick={() => add(p)}>Agregar</button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <button className="btn ghost" style={{marginTop:16}} onClick={() => setSheet(true)}>
+        ⚙  Agregar producto personalizado
+      </button>
+
+      <p className="label" style={{margin:'24px 0 12px'}}>PRODUCTOS AGREGADOS</p>
+      <div className="card">
+        {cart.length === 0 ? <p className="muted">Todavía no has agregado productos.</p> : (
+          <>
+            {cart.map(l => (
+              <div key={l.product.name} className="between"
+                   style={{borderBottom:'1px solid var(--border)',padding:'8px 0'}}>
+                <span>{l.qty} × {l.product.name}</span>
+                <b>{cop(l.product.price * l.qty)}</b>
+              </div>
+            ))}
+            <div className="between" style={{marginTop:14}}>
+              <p className="title">Total</p>
+              <b style={{fontSize:20,color:'var(--link)'}}>{cop(total)}</b>
+            </div>
+          </>
+        )}
+      </div>
+
+      <p className="label" style={{margin:'24px 0 12px'}}>MÉTODO DE PAGO</p>
+      <div className="cols">
+        {['Crédito','Contado'].map(m => (
+          <button key={m} className={'seg ' + (pay === m ? 'on' : '')} onClick={() => setPay(m)}>{m}</button>
+        ))}
+      </div>
+
+      <div className="cols" style={{marginTop:28}}>
+        <button className="btn ghost" onClick={onDone}>Cancelar</button>
+        <button className="btn" disabled={cart.length === 0}
+                onClick={() => { toast('Cotización guardada (demo)'); onDone(); }}>
+          Guardar cotización
+        </button>
+      </div>
+
+      {sheet && <ProductSheet onClose={() => setSheet(false)}
+                              onAdd={(p,q) => { setSheet(false); add(p,q); }} />}
+    </div>
+  );
+};
+
+/* Un solo formulario para llanta nueva y reencauche: cambia el tipo, no los campos. */
+const ProductSheet = ({onClose, onAdd}) => {
+  const [retread, setRetread] = useState(false);
+  const [f, setF] = useState({brand:'', width:'', profile:'', rim:'', qty:'1', price:''});
+  const set = k => e => setF({...f, [k]: e.target.value});
+
+  const submit = () => {
+    const size = [f.width, f.profile, f.rim].filter(Boolean).join('/');
+    onAdd({
+      name: f.brand.trim() || (retread ? 'Reencauche personalizado' : 'Llanta personalizada'),
+      brand: 'Personalizado',
+      size: size || 'Sin medida',
+      price: parseInt(f.price, 10) || 0,
+      retread, stock: 0,
+    }, Math.max(1, parseInt(f.qty, 10) || 1));
+  };
+
+  return (
+    <div className="sheet-bg" onClick={onClose}>
+      <div className="sheet" onClick={e => e.stopPropagation()}>
+        <div style={{width:44,height:4,background:'var(--border)',borderRadius:4,margin:'0 auto 16px'}} />
+        <h3 style={{margin:'0 0 4px',fontSize:20}}>Producto personalizado</h3>
+        <p className="muted" style={{marginBottom:18}}>
+          Los mismos campos sirven para llanta nueva y reencauche.
+        </p>
+        <div className="cols" style={{marginBottom:18}}>
+          <button className={'seg ' + (!retread ? 'on' : '')} onClick={() => setRetread(false)}>◎ Llanta nueva</button>
+          <button className={'seg ' + (retread ? 'on' : '')} onClick={() => setRetread(true)}>♻ Reencauche</button>
+        </div>
+        <div className="field">
+          <label className="f">Marca / Modelo</label>
+          <input className="input" placeholder="Michelin Energy XM2" value={f.brand} onChange={set('brand')} />
+        </div>
+        <div className="field cols">
+          <div>
+            <label className="f">Ancho (mm)</label>
+            <input className="input" placeholder="205" value={f.width} onChange={set('width')} />
+          </div>
+          <div>
+            <label className="f">Perfil (%)</label>
+            <input className="input" placeholder="65" value={f.profile} onChange={set('profile')} />
+          </div>
+          <div>
+            <label className="f">Rin (pulg)</label>
+            <input className="input" placeholder="15" value={f.rim} onChange={set('rim')} />
+          </div>
+        </div>
+        <div className="field cols">
+          <div>
+            <label className="f">Cantidad</label>
+            <input className="input" value={f.qty} onChange={set('qty')} />
+          </div>
+          <div style={{flex:2}}>
+            <label className="f">Valor unitario (COP)</label>
+            <input className="input" placeholder="280000" value={f.price} onChange={set('price')} />
+          </div>
+        </div>
+        <div className="cols" style={{marginTop:22}}>
+          <button className="btn ghost" onClick={onClose}>Cancelar</button>
+          <button className="btn" onClick={submit}>Agregar</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ============ Créditos y abonos ============ */
+const Credits = ({open}) => (
+  <div className="body">
+    <p className="label">{CREDITS.length} CRÉDITOS</p>
+    <div className="stack">
+      {CREDITS.map(c => {
+        const pct = Math.round(c.paid / c.total * 100);
+        return (
+          <div key={c.code} className="card tap" onClick={() => open(c)}>
+            <div className="between">
+              <p className="title">{c.code}</p>
+              <Chip label={c.status} tone={c.tone} />
+            </div>
+            <p className="small" style={{marginTop:4}}>Vence: {c.due}</p>
+            <div className="between" style={{marginTop:12}}>
+              <p className="muted">Pendiente: <b style={{color:'var(--text)'}}>{cop(c.total - c.paid)}</b></p>
+              <p className="small">Total: {cop(c.total)}</p>
+            </div>
+            <div className={'bar ' + (c.tone === 'danger' ? 'red' : 'navy')} style={{marginTop:10}}>
+              <span style={{width:pct + '%'}} />
+            </div>
+            <p className="small" style={{marginTop:8}}>{pct}% abonado · Cuota: {cop(c.fee)} / mes</p>
+          </div>
+        );
+      })}
+    </div>
+  </div>
+);
+
+const CreditDetail = ({credit, go}) => {
+  const pct = Math.round(credit.paid / credit.total * 100);
+  const facts = [['Valor total', cop(credit.total)], ['Abonado', cop(credit.paid)],
+                 ['Cuota mensual', cop(credit.fee) + ' / mes'], ['Inicio', credit.start],
+                 ['Vence', credit.due], ['Progreso', pct + '%']];
+  return (
+    <div className="body">
+      <div className="card" style={{padding:20,borderRadius:18}}>
+        <div className="between">
+          <p className="muted">Saldo pendiente</p>
+          <Chip label={credit.status} tone={credit.tone} />
+        </div>
+        <p className="big" style={{marginTop:8}}>{cop(credit.total - credit.paid)}</p>
+        <div className="bar" style={{marginTop:16}}><span style={{width:pct + '%'}} /></div>
+        <div className="grid" style={{marginTop:18,gap:14}}>
+          {facts.map(([k,v]) => (
+            <div key={k}><p className="small">{k}</p><p className="title">{v}</p></div>
+          ))}
+        </div>
+      </div>
+      <div className="cols" style={{marginTop:20}}>
+        <button className="btn" onClick={() => go('newPayment')}>Registrar abono</button>
+        <button className="btn ghost" onClick={() => go('history')}>Ver historial</button>
+      </div>
+    </div>
+  );
+};
+
+const NewPayment = ({onDone, toast}) => {
+  const [method, setMethod] = useState(METHODS[0]);
+  const [receipt, setReceipt] = useState(false);
+  return (
+    <div className="body">
+      <div className="field">
+        <label className="f">Monto del abono (COP)</label>
+        <input className="input" placeholder="350000" />
+      </div>
+      <div className="field">
+        <label className="f">Método de pago</label>
+        <div className="cols">
+          {METHODS.map(m => (
+            <button key={m} className={'seg ' + (method === m ? 'on' : '')}
+                    style={{fontSize:13,padding:'13px 4px'}} onClick={() => setMethod(m)}>{m}</button>
+          ))}
+        </div>
+      </div>
+      <div className="field">
+        <label className="f">Comprobante de pago</label>
+        <div className="drop" onClick={() => setReceipt(!receipt)}>
+          <div style={{fontSize:22}}>{receipt ? '✓' : '⬆'}</div>
+          {receipt ? 'comprobante.jpg' : 'Subir comprobante'}
+        </div>
+      </div>
+      <button className="btn" style={{marginTop:24}}
+              onClick={() => { toast('Abono registrado (demo)'); onDone(); }}>Guardar abono</button>
+    </div>
+  );
+};
+
+const History = ({credit}) => {
+  const payments = credit ? credit.payments : CREDITS.flatMap(c => c.payments);
+  const total = payments.reduce((s,p) => s + p.a, 0);
+  return (
+    <div className="body">
+      <div style={{background:'var(--header)',borderRadius:18,padding:20}}>
+        <p style={{margin:0,color:'var(--on-header-muted)',fontSize:13}}>Total abonado</p>
+        <p className="big" style={{color:'#fff',marginTop:6}}>{cop(total)}</p>
+        <p style={{margin:'4px 0 0',color:'var(--on-header-muted)',fontSize:12}}>
+          {payments.length} transacciones</p>
+      </div>
+      <p className="label" style={{margin:'24px 0 12px'}}>TRANSACCIONES</p>
+      <div className="stack">
+        {payments.map((p,i) => (
+          <div key={i} className="card" style={{padding:16,borderRadius:14}}>
+            <div className="between">
+              <div>
+                <b style={{fontSize:17}}>{cop(p.a)}</b>
+                <p className="small" style={{marginTop:4}}>{p.d} · {p.m}</p>
+              </div>
+              <Chip label="Confirmado" tone="success" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+/* ============ Entregas ============ */
+const Deliveries = ({open}) => (
+  <div className="body">
+    <p className="label">{DELIVERIES.length} ENTREGAS</p>
+    <div className="stack">
+      {DELIVERIES.map(d => (
+        <div key={d.code} className="card tap" onClick={() => open(d)}>
+          <div className="between">
+            <div>
+              <p className="title">{d.code}</p>
+              <p className="small" style={{marginTop:4}}>{d.address} · {d.date}</p>
+              <div style={{marginTop:10}}><Chip label={d.status} tone={d.tone} /></div>
+            </div>
+            <span style={{color:'var(--text-3)'}}>›</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+const DeliveryDetail = ({delivery}) => (
+  <div className="body">
+    <div className="card">
+      <div className="between">
+        <p className="title">Estado de entrega</p>
+        <Chip label={delivery.status} tone={delivery.tone} />
+      </div>
+      {[['Cotización',delivery.quote],['Dirección',delivery.address],
+        ['Fecha programada',delivery.date],['Fecha de entrega',delivery.delivered || 'Sin entregar']]
+        .map(([k,v]) => (
+          <div key={k} className="between" style={{marginTop:12}}>
+            <p className="muted">{k}</p>
+            <p className="title" style={{textAlign:'right'}}>{v}</p>
+          </div>
+      ))}
+    </div>
+    <p className="label" style={{margin:'24px 0 12px'}}>EVIDENCIA FOTOGRÁFICA</p>
+    <div style={{height:190,display:'grid',placeItems:'center',background:'var(--surface-alt)',
+                 border:'1px solid var(--border)',borderRadius:16,color:'var(--text-2)'}}>
+      <div style={{textAlign:'center'}}>
+        <div style={{fontSize:32}}>📷</div>
+        <p className="muted" style={{marginTop:10}}>
+          {delivery.status === 'Entregado' ? 'Foto de entrega disponible' : 'Sin evidencia registrada'}
+        </p>
+      </div>
+    </div>
+  </div>
+);
+
+/* ============ Perfil ============ */
+const initials = name => name.split(' ').filter(Boolean).slice(0,2).map(p => p[0]).join('').toUpperCase();
+
+const Profile = ({role, go, onLogout}) => {
+  const p = PROFILES[role];
+  const rows = [['Nombre completo',p.name],['Documento',p.doc],['Correo',p.email],
+                ['Teléfono',p.phone],['Dirección',p.address],
+                ['Rol', role === 'admin' ? 'Administrador' : 'Usuario']];
+  return (
+    <div className="body">
+      <div style={{width:104,height:104,borderRadius:'50%',background:'var(--header)',color:'#fff',
+                   display:'grid',placeItems:'center',fontSize:34,fontWeight:700,margin:'0 auto'}}>
+        {initials(p.name)}
+      </div>
+      <h2 style={{textAlign:'center',fontSize:20,margin:'16px 0 4px'}}>{p.name}</h2>
+      <p className="muted" style={{textAlign:'center'}}>{p.email}</p>
+
+      <p className="label" style={{margin:'28px 0 12px'}}>INFORMACIÓN PERSONAL</p>
+      <div className="card" style={{padding:'0 16px'}}>
+        {rows.map(([k,v],i) => (
+          <div key={k} style={{padding:'14px 0', borderTop: i ? '1px solid var(--border)' : 'none'}}>
+            <p className="label" style={{margin:0,letterSpacing:.8}}>{k.toUpperCase()}</p>
+            <p style={{margin:'4px 0 0'}}>{v}</p>
+          </div>
+        ))}
+      </div>
+
+      <button className="btn" style={{marginTop:28}} onClick={() => go('editProfile')}>✎  Editar perfil</button>
+      <button className="btn ghost" style={{marginTop:12}} onClick={onLogout}>⇥  Cerrar sesión</button>
+    </div>
+  );
+};
+
+const EditProfile = ({role, onDone, toast}) => {
+  const [f, setF] = useState(PROFILES[role]);
+  const set = k => e => setF({...f, [k]: e.target.value});
+  const fields = [['Nombre completo','name'],['Documento','doc'],['Correo','email'],
+                  ['Teléfono','phone'],['Dirección','address']];
+  return (
+    <div className="body">
+      {fields.map(([label,key]) => (
+        <div className="field" key={key}>
+          <label className="f">{label}</label>
+          <input className="input" value={f[key]} onChange={set(key)} />
+        </div>
+      ))}
+      <div className="cols" style={{marginTop:28}}>
+        <button className="btn ghost" onClick={onDone}>Cancelar</button>
+        <button className="btn" onClick={() => { toast('Perfil actualizado (demo)'); onDone(); }}>
+          Guardar cambios
+        </button>
+      </div>
+    </div>
+  );
+};
+
+/* ============ App: pila de pantallas + barra fija ============ */
+const TITLES = {
+  quotes:'Cotizaciones', newQuote:'Nueva cotización', quoteDetail:'',
+  credits:'Mis créditos', creditDetail:'', newPayment:'Registrar abono',
+  history:'Historial de abonos', payments:'Abonos',
+  deliveries:'Entregas', deliveryDetail:'',
+  profile:'Mi perfil', editProfile:'Editar perfil', retreads:'Reencauches',
+};
+const TAB_OF = {
+  home:'home', quotes:'quotes', newQuote:'quotes', quoteDetail:'quotes',
+  credits:'credits', creditDetail:'credits', newPayment:'credits',
+  history:'credits', payments:'credits', retreads:'home',
+  deliveries:'deliveries', deliveryDetail:'deliveries',
+  profile:'profile', editProfile:'profile',
+};
+
+function App() {
+  const [theme, setTheme] = useState('dark');
+  const [role, setRole] = useState(null);
+  const [stack, setStack] = useState([{screen:'home'}]);
+  const [msg, setMsg] = useState(null);
+
+  const top = stack[stack.length - 1];
+  const push = (screen, data) => setStack(s => [...s, {screen, data}]);
+  const pop = () => setStack(s => (s.length > 1 ? s.slice(0, -1) : s));
+  const goTab = screen => setStack(screen === 'home' ? [{screen:'home'}] : [{screen:'home'}, {screen}]);
+  const toast = text => { setMsg(text); setTimeout(() => setMsg(null), 1600); };
+
+  const logout = () => { setRole(null); setStack([{screen:'home'}]); };
+
+  const go = screen => {
+    if (screen === 'logout') return logout();
+    if (screen === 'retreads') return toast('Módulo "Reencauches" en construcción');
+    push(screen);
+  };
+
+  if (!role) {
+    return (
+      <div className="phone" data-theme={theme}>
+        <Login theme={theme} toggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+               onEnter={r => { setRole(r); setStack([{screen:'home'}]); }} />
+      </div>
+    );
+  }
+
+  const credit = [...stack].reverse().find(s => s.screen === 'creditDetail');
+  const isHome = top.screen === 'home';
+  const title = isHome ? PROFILES[role].name
+    : (TITLES[top.screen] || (top.data && (top.data.code || '')));
+
+  let content = null;
+  switch (top.screen) {
+    case 'home': content = <Home role={role} go={go} />; break;
+    case 'quotes': content = <Quotes go={go} open={q => push('quoteDetail', q)} />; break;
+    case 'quoteDetail': content = <QuoteDetail quote={top.data} />; break;
+    case 'newQuote': content = <NewQuote onDone={pop} toast={toast} />; break;
+    case 'credits': content = <Credits open={c => push('creditDetail', c)} />; break;
+    case 'creditDetail': content = <CreditDetail credit={top.data} go={go} />; break;
+    case 'newPayment': content = <NewPayment onDone={pop} toast={toast} />; break;
+    case 'history': content = <History credit={credit && credit.data} />; break;
+    case 'payments': content = <History credit={null} />; break;
+    case 'deliveries': content = <Deliveries open={d => push('deliveryDetail', d)} />; break;
+    case 'deliveryDetail': content = <DeliveryDetail delivery={top.data} />; break;
+    case 'profile': content = <Profile role={role} go={go} onLogout={logout} />; break;
+    case 'editProfile': content = <EditProfile role={role} onDone={pop} toast={toast} />; break;
+    default: content = <div className="body"><p className="muted">Pantalla en construcción.</p></div>;
+  }
+
+  return (
+    <div className="phone" data-theme={theme}>
+      <Header
+        title={title}
+        subtitle={isHome ? 'Bienvenido de nuevo,' : null}
+        role={isHome && role === 'admin' ? 'ADMINISTRADOR' : null}
+        onBack={stack.length > 1 ? pop : null}
+        theme={theme}
+        toggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+      />
+      {content}
+      {msg && <div className="toast">{msg}</div>}
+      <TabBar active={TAB_OF[top.screen] || 'home'} go={goTab} />
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

@@ -1,13 +1,16 @@
-# MiraLlantas — Frontend móvil (Flutter)
+# MiraLlantas — App móvil del cliente (Flutter)
 
-Solo UI: no hay autenticación real, llamadas a API ni persistencia.
-Todos los datos (nombre, saldo, créditos, módulos) son mock.
+App de un solo rol (cliente). **Cartera es el único módulo con
+funcionalidad**: registrar un abono baja el saldo pendiente y eso se
+refleja al instante en el historial, en el detalle y en el resumen de
+Inicio. Cotizaciones, Entregas y Perfil son visualización con datos de
+ejemplo; el perfil se puede editar, pero solo en memoria.
 
 ## Cómo ejecutarlo
 
 Verificado con Flutter 3.47.2 (Dart 3.13.2): `flutter analyze` sin
-incidencias, 7 pruebas de widget en verde y `flutter build web --release`
-compilando correctamente.
+incidencias, 6 pruebas de widget en verde y `flutter build apk --release`
+compilando.
 
 ```bash
 flutter pub get
@@ -20,58 +23,60 @@ Para revisarla en el navegador:
 flutter run -d chrome
 ```
 
-Las rutas admiten deep link con hash: `#/login`, `#/dashboard/usuario`,
-`#/dashboard/administrador`, `#/perfil`, `#/cotizaciones`,
-`#/cotizaciones/nueva`, `#/creditos`, `#/creditos/detalle`, `#/abonos`,
-`#/abonos/nuevo` y `#/entregas`.
-
-## Prototipo en un solo archivo
-
-`mirallantas-prototipo.html` es el mockup completo (React por CDN, sin
-build ni dependencias): se abre con doble clic en el navegador y trae las
-mismas pantallas que la app, la barra inferior fija, el catálogo de
-productos con buscador y el formulario unificado de llanta nueva /
-reencauche. Es independiente del código Flutter: los cambios en uno no se
-reflejan en el otro.
-
 ## Android
 
 ```bash
 flutter build apk --release
 ```
 
-El APK queda en `build/app/outputs/flutter-apk/app-release.apk` (~46 MB,
-incluye todas las ABI; con `--split-per-abi` bajan a ~16 MB cada uno).
-
-Ojo: la plantilla de Flutter firma el release con la **clave de debug**
-(ver el `TODO` en `android/app/build.gradle.kts`). Antes de publicarlo en
-Play hay que crear un keystore propio y su `signingConfig`.
+El APK queda en `build/app/outputs/flutter-apk/app-release.apk`. Ojo: la
+plantilla de Flutter lo firma con la **clave de debug** (ver el `TODO` en
+`android/app/build.gradle.kts`); antes de publicarlo en Play hace falta un
+keystore propio.
 
 ## Estructura
 
-El proyecto está reducido al mínimo: todo el código de la app vive en un
-solo archivo.
+Todo el código de la app vive en un solo archivo.
 
 ```
-lib/main.dart                 # app completa: tema, rutas, widgets,
-                              # datos mock y las 15 pantallas
-test/widget_test.dart         # 7 pruebas de widget (flujo completo)
-mirallantas-prototipo.html    # mockup independiente en un solo archivo
+lib/main.dart                 # app completa: estado de Cartera, tema,
+                              # widgets, datos mock y las 14 pantallas
+assets/images/                # logo del splash y fotos del carrusel
+test/widget_test.dart         # 6 pruebas (navegación + abono real)
+mirallantas-prototipo.html    # mockup previo en un solo archivo (*)
 android/  web/                # plataformas generadas por flutter create
 ```
 
-Para volver a generar iOS o escritorio: `flutter create . --platforms=ios`.
+(*) El prototipo HTML corresponde al diseño anterior y **no** refleja
+este rediseño; se conserva solo como referencia.
 
-## Flujo
+## Pantallas
 
-`Splash` (2,2 s) → `Login`. En el login se elige el rol con el selector
-"Acceder como": *Usuario* lleva a `/dashboard/usuario` y *Administrador*
-a `/dashboard/administrador`. Desde ambos dashboards se llega a
-`Mi Perfil` y a `Cerrar sesión` (vuelve al login limpiando el stack).
+`Splash` (logo sobre amarillo) → `Login` (sin selector de rol, con
+píldora Claro/Oscuro) → `Inicio`. Desde el login se llega a `Recuperar
+contraseña`, que son tres pasos: correo, código de 6 dígitos y nueva
+contraseña.
+
+La barra inferior tiene cinco pestañas —Inicio, Cotizaciones, Cartera,
+Entregas y Perfil— y cada una mantiene su propia pila de navegación, así
+que la barra sigue visible dentro de los detalles. El círculo amarillo se
+desliza hasta la pestaña elegida y sobresale de la barra, con el icono
+saltando dentro.
+
+- **Inicio**: saldo de cartera con barra de cupo, contadores de
+  cotizaciones y entregas, próximo pago y carrusel de fotos.
+- **Cotizaciones**: listado, detalle con ítems y formulario de nueva
+  cotización (campos distintos para llanta nueva y para reencauche).
+- **Cartera**: listado, detalle, registrar abono, confirmación e
+  historial de abonos.
+- **Entregas**: listado y detalle, con evidencia fotográfica o motivo de
+  cancelación.
+- **Perfil**: datos del cliente, edición en la misma pantalla y cerrar
+  sesión.
 
 ## Tema
 
-`ThemeController.instance.toggle()` alterna `ThemeMode.dark` /
-`ThemeMode.light`. El botón de sol/luna vive en las cabeceras (dashboards
-y perfil) y también en la esquina del login. Los widgets no declaran
-colores literales: leen `Theme.of(context)` o `context.palette`.
+`ThemeController.instance` alterna claro y oscuro; el botón vive en la
+cabecera de cada pantalla y en la píldora del login. Ningún widget
+declara colores literales: todos leen `Theme.of(context)` o el atajo
+`context.palette`.

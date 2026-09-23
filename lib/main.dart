@@ -1,20 +1,22 @@
-// MiraLlantas — frontend móvil (solo UI, sin backend ni persistencia).
+// MiraLlantas — app móvil del cliente (solo UI).
 //
-// Todo el prototipo vive en este único archivo, ordenado por secciones:
-//   1. Arranque (main + MaterialApp)
-//   2. Tema: paleta, ThemeData y control de modo claro/oscuro
-//   3. Widgets compartidos
+// Todo vive en este archivo, por secciones:
+//   1. Arranque y estado de Cartera (el único módulo con funcionalidad)
+//   2. Tema: paleta, ThemeData y modo claro/oscuro
+//   3. Widgets compartidos (cabecera, barra inferior animada, campos...)
 //   4. Datos mock
-//   5. Rutas
-//   6. Pantallas
+//   5. Pantallas
+//   6. Rutas
 //
-// Los widgets nunca declaran colores literales: los leen del tema con
-// `Theme.of(context)` o del atajo `context.palette`.
+// Cotizaciones, Entregas y Perfil son solo visualización: muestran datos
+// de ejemplo y no guardan nada. Cartera sí mantiene estado en memoria:
+// registrar un abono baja el saldo pendiente y aparece en el historial,
+// en el resumen de inicio y en el próximo pago.
 
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 void main() => runApp(const MiraLlantasApp());
 
@@ -41,29 +43,157 @@ class MiraLlantasApp extends StatelessWidget {
 }
 
 // ====================================================================
-// core/theme/app_colors.dart
+// 1. Estado de Cartera
 // ====================================================================
 
-/// Paleta única de MiraLlantas.
-///
-/// Todos los colores de la app salen de aquí: los widgets nunca declaran
-/// colores literales, sino que los leen del [ThemeData] construido en
-/// `app_theme.dart` o de la [MiraPalette] activa.
+/// Un abono registrado sobre una cartera.
+class Abono {
+  const Abono({
+    required this.monto,
+    required this.fecha,
+    required this.metodo,
+    this.confirmado = true,
+  });
+
+  final int monto;
+  final String fecha;
+  final String metodo;
+  final bool confirmado;
+}
+
+/// Cartera (crédito) del cliente.
+class Cartera {
+  Cartera({
+    required this.codigo,
+    required this.total,
+    required this.abonado,
+    required this.cuotaMensual,
+    required this.inicio,
+    required this.vence,
+    required this.vencida,
+    required List<Abono> abonos,
+  }) : abonos = List<Abono>.of(abonos);
+
+  final String codigo;
+  final int total;
+  int abonado;
+  final int cuotaMensual;
+  final String inicio;
+  final String vence;
+  final bool vencida;
+  final List<Abono> abonos;
+
+  int get pendiente => (total - abonado).clamp(0, total);
+
+  double get progreso => total == 0 ? 0 : (abonado / total).clamp(0.0, 1.0);
+
+  int get porcentaje => (progreso * 100).round();
+
+  bool get alDia => !vencida;
+
+  String get estado => vencida ? 'Vencido' : 'Al día';
+}
+
+/// Estado en memoria de las carteras. Es lo único que cambia de verdad
+/// en la app: al registrar un abono, todas las pantallas que escuchan
+/// este notificador se actualizan.
+class CarteraStore extends ChangeNotifier {
+  CarteraStore._();
+
+  static final CarteraStore instance = CarteraStore._();
+
+  final List<Cartera> carteras = [
+    Cartera(
+      codigo: 'CRD-2025-001',
+      total: 4500000,
+      abonado: 2100000,
+      cuotaMensual: 350000,
+      inicio: '1 abr. 2025',
+      vence: '30 sep. 2025',
+      vencida: false,
+      abonos: const [
+        Abono(monto: 350000, fecha: '1 ago. 2025', metodo: 'Transferencia'),
+        Abono(monto: 350000, fecha: '1 jul. 2025', metodo: 'Transferencia'),
+        Abono(monto: 200000, fecha: '3 jun. 2025', metodo: 'Efectivo'),
+        Abono(monto: 150000, fecha: '1 jun. 2025', metodo: 'Transferencia'),
+      ],
+    ),
+    Cartera(
+      codigo: 'CRD-2025-002',
+      total: 1800000,
+      abonado: 1800000,
+      cuotaMensual: 300000,
+      inicio: '15 feb. 2025',
+      vence: '15 ago. 2025',
+      vencida: true,
+      abonos: const [
+        Abono(monto: 300000, fecha: '15 jul. 2025', metodo: 'Nequi'),
+        Abono(monto: 300000, fecha: '15 jun. 2025', metodo: 'Nequi'),
+      ],
+    ),
+  ];
+
+  /// Cartera activa: la primera que todavía tiene saldo por pagar.
+  /// Es la que alimenta el resumen de Inicio.
+  Cartera get vigente => carteras.firstWhere(
+        (c) => c.pendiente > 0,
+        orElse: () => carteras.first,
+      );
+
+  int get cupoTotal => vigente.total;
+
+  int get usado => vigente.abonado;
+
+  int get disponible => vigente.pendiente;
+
+  int get porcentajeUsado => vigente.porcentaje;
+
+  /// Cartera cuya cuota está más próxima a vencer.
+  Cartera? get proximoPago {
+    for (final c in carteras) {
+      if (c.pendiente > 0) return c;
+    }
+    return null;
+  }
+
+  /// Registra un abono: baja el pendiente y encabeza el historial.
+  void registrarAbono({
+    required Cartera cartera,
+    required int monto,
+    required String metodo,
+  }) {
+    if (monto <= 0) return;
+    cartera.abonado = (cartera.abonado + monto).clamp(0, cartera.total);
+    cartera.abonos.insert(
+      0,
+      Abono(monto: monto, fecha: _hoy(), metodo: metodo),
+    );
+    notifyListeners();
+  }
+
+  static String _hoy() {
+    const meses = [
+      'ene.', 'feb.', 'mar.', 'abr.', 'may.', 'jun.',
+      'jul.', 'ago.', 'sep.', 'oct.', 'nov.', 'dic.',
+    ];
+    final now = DateTime.now();
+    return '${now.day} ${meses[now.month - 1]} ${now.year}';
+  }
+}
+
+// ====================================================================
+// 2. Tema
+// ====================================================================
+
 class AppColors {
   const AppColors._();
 
-  /// Amarillo de marca. Es el mismo en tema claro y oscuro.
   static const Color accent = Color(0xFFF5B800);
   static const Color accentDark = Color(0xFFD99F00);
-
-  /// Color del texto que se dibuja encima del amarillo.
   static const Color onAccent = Color(0xFF1A1400);
-
-  // Estados (compartidos por ambos temas).
-  static const Color success = Color(0xFF22C55E);
-  static const Color danger = Color(0xFFEF4444);
-  static const Color info = Color(0xFF60A5FA);
-  static const Color warning = Color(0xFFF59E0B);
+  static const Color success = Color(0xFF16A34A);
+  static const Color warning = Color(0xFFD97706);
+  static const Color danger = Color(0xFFDC2626);
 
   static const MiraPalette dark = MiraPalette(
     background: Color(0xFF0D1520),
@@ -82,11 +212,11 @@ class AppColors {
     iconTileFg: Color(0xFF8FB4E3),
     trackBg: Color(0xFF2B3A50),
     accentSoft: Color(0x1FF5B800),
-    dangerSoft: Color(0x2EEF4444),
-    successSoft: Color(0x2E22C55E),
-    warningSoft: Color(0x2EF59E0B),
+    successSoft: Color(0x2E16A34A),
+    warningSoft: Color(0x2ED97706),
+    dangerSoft: Color(0x2EDC2626),
     shadow: Color(0x66000000),
-    link: info,
+    link: Color(0xFF60A5FA),
     isDark: true,
   );
 
@@ -102,25 +232,20 @@ class AppColors {
     textSecondary: Color(0xFF64748B),
     textMuted: Color(0xFF94A3B8),
     border: Color(0xFFE2E8F0),
-    inputFill: Color(0xFFEFF3F8),
+    inputFill: Color(0xFFF1F5F9),
     iconTileBg: Color(0xFFE8EFF8),
     iconTileFg: Color(0xFF2E5C8A),
     trackBg: Color(0xFFDDE5EE),
     accentSoft: Color(0x24F5B800),
-    dangerSoft: Color(0x1FEF4444),
-    successSoft: Color(0x1F22C55E),
-    warningSoft: Color(0x24F59E0B),
-    shadow: Color(0x2E000000),
+    successSoft: Color(0x1F16A34A),
+    warningSoft: Color(0x1FD97706),
+    dangerSoft: Color(0x14DC2626),
+    shadow: Color(0x24000000),
     link: Color(0xFF1E5FA8),
     isDark: false,
   );
 }
 
-/// Conjunto de colores de una variante del tema (oscuro o claro).
-///
-/// Se expone a los widgets como [ThemeExtension]: se accede con
-/// `Theme.of(context).extension<MiraPalette>()!` o con el atajo
-/// `context.palette` definido en `app_theme.dart`.
 @immutable
 class MiraPalette extends ThemeExtension<MiraPalette> {
   const MiraPalette({
@@ -140,138 +265,64 @@ class MiraPalette extends ThemeExtension<MiraPalette> {
     required this.iconTileFg,
     required this.trackBg,
     required this.accentSoft,
-    required this.dangerSoft,
     required this.successSoft,
     required this.warningSoft,
+    required this.dangerSoft,
     required this.shadow,
     required this.link,
     required this.isDark,
   });
 
-  /// Fondo general de las pantallas.
   final Color background;
-
-  /// Fondo de tarjetas y campos elevados.
   final Color surface;
   final Color surfaceAlt;
-
-  /// Azul marino de las cabeceras y su contenido.
   final Color header;
   final Color onHeader;
   final Color onHeaderMuted;
-
-  /// Velo claro para botones dibujados sobre la cabecera.
   final Color headerOverlay;
-
   final Color textPrimary;
   final Color textSecondary;
   final Color textMuted;
   final Color border;
   final Color inputFill;
-
-  /// Cuadro de icono de las tarjetas de módulo.
   final Color iconTileBg;
   final Color iconTileFg;
-
-  /// Fondo de las barras de progreso.
   final Color trackBg;
-
-  /// Amarillo y rojo translúcidos para estados seleccionados/destructivos.
   final Color accentSoft;
-  final Color dangerSoft;
   final Color successSoft;
   final Color warningSoft;
-
+  final Color dangerSoft;
   final Color shadow;
   final Color link;
   final bool isDark;
 
   @override
-  MiraPalette copyWith({
-    Color? background,
-    Color? surface,
-    Color? surfaceAlt,
-    Color? header,
-    Color? onHeader,
-    Color? onHeaderMuted,
-    Color? headerOverlay,
-    Color? textPrimary,
-    Color? textSecondary,
-    Color? textMuted,
-    Color? border,
-    Color? inputFill,
-    Color? iconTileBg,
-    Color? iconTileFg,
-    Color? trackBg,
-    Color? accentSoft,
-    Color? dangerSoft,
-    Color? successSoft,
-    Color? warningSoft,
-    Color? shadow,
-    Color? link,
-    bool? isDark,
-  }) {
-    return MiraPalette(
-      background: background ?? this.background,
-      surface: surface ?? this.surface,
-      surfaceAlt: surfaceAlt ?? this.surfaceAlt,
-      header: header ?? this.header,
-      onHeader: onHeader ?? this.onHeader,
-      onHeaderMuted: onHeaderMuted ?? this.onHeaderMuted,
-      headerOverlay: headerOverlay ?? this.headerOverlay,
-      textPrimary: textPrimary ?? this.textPrimary,
-      textSecondary: textSecondary ?? this.textSecondary,
-      textMuted: textMuted ?? this.textMuted,
-      border: border ?? this.border,
-      inputFill: inputFill ?? this.inputFill,
-      iconTileBg: iconTileBg ?? this.iconTileBg,
-      iconTileFg: iconTileFg ?? this.iconTileFg,
-      trackBg: trackBg ?? this.trackBg,
-      accentSoft: accentSoft ?? this.accentSoft,
-      dangerSoft: dangerSoft ?? this.dangerSoft,
-      successSoft: successSoft ?? this.successSoft,
-      warningSoft: warningSoft ?? this.warningSoft,
-      shadow: shadow ?? this.shadow,
-      link: link ?? this.link,
-      isDark: isDark ?? this.isDark,
-    );
-  }
+  MiraPalette copyWith() => this;
 
   @override
   MiraPalette lerp(ThemeExtension<MiraPalette>? other, double t) {
     if (other is! MiraPalette) return this;
-    return MiraPalette(
-      background: Color.lerp(background, other.background, t)!,
-      surface: Color.lerp(surface, other.surface, t)!,
-      surfaceAlt: Color.lerp(surfaceAlt, other.surfaceAlt, t)!,
-      header: Color.lerp(header, other.header, t)!,
-      onHeader: Color.lerp(onHeader, other.onHeader, t)!,
-      onHeaderMuted: Color.lerp(onHeaderMuted, other.onHeaderMuted, t)!,
-      headerOverlay: Color.lerp(headerOverlay, other.headerOverlay, t)!,
-      textPrimary: Color.lerp(textPrimary, other.textPrimary, t)!,
-      textSecondary: Color.lerp(textSecondary, other.textSecondary, t)!,
-      textMuted: Color.lerp(textMuted, other.textMuted, t)!,
-      border: Color.lerp(border, other.border, t)!,
-      inputFill: Color.lerp(inputFill, other.inputFill, t)!,
-      iconTileBg: Color.lerp(iconTileBg, other.iconTileBg, t)!,
-      iconTileFg: Color.lerp(iconTileFg, other.iconTileFg, t)!,
-      trackBg: Color.lerp(trackBg, other.trackBg, t)!,
-      accentSoft: Color.lerp(accentSoft, other.accentSoft, t)!,
-      dangerSoft: Color.lerp(dangerSoft, other.dangerSoft, t)!,
-      successSoft: Color.lerp(successSoft, other.successSoft, t)!,
-      warningSoft: Color.lerp(warningSoft, other.warningSoft, t)!,
-      shadow: Color.lerp(shadow, other.shadow, t)!,
-      link: Color.lerp(link, other.link, t)!,
-      isDark: t < 0.5 ? isDark : other.isDark,
-    );
+    return t < 0.5 ? this : other;
   }
 }
 
-// ====================================================================
-// core/theme/app_theme.dart
-// ====================================================================
+extension MiraThemeContext on BuildContext {
+  MiraPalette get palette => Theme.of(this).extension<MiraPalette>()!;
+}
 
-/// Construye los [ThemeData] claro y oscuro a partir de [AppColors].
+/// Controla el modo claro/oscuro (en memoria, sin persistencia).
+class ThemeController extends ValueNotifier<ThemeMode> {
+  ThemeController._() : super(ThemeMode.light);
+
+  static final ThemeController instance = ThemeController._();
+
+  bool get isDark => value == ThemeMode.dark;
+
+  void toggle() => value = isDark ? ThemeMode.light : ThemeMode.dark;
+
+  void set(bool dark) => value = dark ? ThemeMode.dark : ThemeMode.light;
+}
+
 class AppTheme {
   const AppTheme._();
 
@@ -302,17 +353,6 @@ class AppTheme {
       canvasColor: p.background,
       dividerColor: p.border,
       extensions: <ThemeExtension<dynamic>>[p],
-      appBarTheme: AppBarTheme(
-        backgroundColor: p.header,
-        foregroundColor: p.onHeader,
-        elevation: 0,
-        centerTitle: false,
-        titleTextStyle: TextStyle(
-          color: p.onHeader,
-          fontSize: 20,
-          fontWeight: FontWeight.w700,
-        ),
-      ),
       textTheme: _textTheme(p),
       iconTheme: IconThemeData(color: p.textSecondary),
       inputDecorationTheme: InputDecorationTheme(
@@ -335,27 +375,28 @@ class AppTheme {
           foregroundColor: AppColors.onAccent,
           disabledBackgroundColor: p.trackBg,
           elevation: 0,
-          minimumSize: const Size.fromHeight(56),
+          minimumSize: const Size.fromHeight(54),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(14),
           ),
           textStyle: const TextStyle(
-            fontSize: 17,
+            fontSize: 16,
             fontWeight: FontWeight.w700,
           ),
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
-          foregroundColor: p.textPrimary,
-          minimumSize: const Size.fromHeight(56),
-          side: BorderSide(color: p.border),
+          foregroundColor: p.header,
+          backgroundColor: p.surface,
+          minimumSize: const Size.fromHeight(54),
+          side: BorderSide(color: p.isDark ? p.border : p.header),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(14),
           ),
           textStyle: const TextStyle(
             fontSize: 16,
-            fontWeight: FontWeight.w600,
+            fontWeight: FontWeight.w700,
           ),
         ),
       ),
@@ -363,22 +404,15 @@ class AppTheme {
         style: TextButton.styleFrom(
           foregroundColor: p.link,
           textStyle: const TextStyle(
-            fontSize: 14,
+            fontSize: 13,
             fontWeight: FontWeight.w600,
-            decoration: TextDecoration.underline,
           ),
         ),
       ),
-      bottomNavigationBarTheme: BottomNavigationBarThemeData(
-        backgroundColor: p.surface,
-        selectedItemColor: AppColors.accent,
-        unselectedItemColor: p.textSecondary,
-        type: BottomNavigationBarType.fixed,
-        elevation: 0,
-        showUnselectedLabels: true,
-        selectedLabelStyle:
-            const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
-        unselectedLabelStyle: const TextStyle(fontSize: 11),
+      snackBarTheme: SnackBarThemeData(
+        backgroundColor: p.header,
+        contentTextStyle: TextStyle(color: p.onHeader),
+        behavior: SnackBarBehavior.floating,
       ),
       progressIndicatorTheme: ProgressIndicatorThemeData(
         color: AppColors.accent,
@@ -391,23 +425,23 @@ class AppTheme {
     return TextTheme(
       headlineLarge: TextStyle(
         color: p.textPrimary,
-        fontSize: 32,
+        fontSize: 30,
         fontWeight: FontWeight.w800,
         letterSpacing: -0.5,
       ),
       titleLarge: TextStyle(
         color: p.textPrimary,
-        fontSize: 20,
+        fontSize: 19,
         fontWeight: FontWeight.w700,
       ),
       titleMedium: TextStyle(
         color: p.textPrimary,
         fontSize: 16,
-        fontWeight: FontWeight.w600,
+        fontWeight: FontWeight.w700,
       ),
       bodyLarge: TextStyle(color: p.textPrimary, fontSize: 15),
       bodyMedium: TextStyle(color: p.textSecondary, fontSize: 14),
-      bodySmall: TextStyle(color: p.textMuted, fontSize: 12),
+      bodySmall: TextStyle(color: p.textMuted, fontSize: 12.5),
       labelLarge: TextStyle(
         color: p.textSecondary,
         fontSize: 13,
@@ -415,7 +449,7 @@ class AppTheme {
       ),
       labelSmall: TextStyle(
         color: p.textMuted,
-        fontSize: 12,
+        fontSize: 11.5,
         fontWeight: FontWeight.w700,
         letterSpacing: 1.1,
       ),
@@ -430,36 +464,11 @@ class AppTheme {
   }
 }
 
-/// Atajo para leer la paleta activa desde cualquier widget.
-extension MiraThemeContext on BuildContext {
-  MiraPalette get palette => Theme.of(this).extension<MiraPalette>()!;
-}
-
 // ====================================================================
-// core/theme/theme_controller.dart
+// 3. Widgets compartidos
 // ====================================================================
 
-/// Controla el [ThemeMode] de la app (solo en memoria: sin persistencia).
-///
-/// Lo consume `main.dart` con un [ValueListenableBuilder] y lo alternan los
-/// botones de tema de las cabeceras.
-class ThemeController extends ValueNotifier<ThemeMode> {
-  ThemeController._() : super(ThemeMode.dark);
-
-  static final ThemeController instance = ThemeController._();
-
-  bool get isDark => value == ThemeMode.dark;
-
-  void toggle() {
-    value = isDark ? ThemeMode.light : ThemeMode.dark;
-  }
-}
-
-// ====================================================================
-// core/format/currency.dart
-// ====================================================================
-
-/// Formatea un entero como pesos colombianos: `1200000` -> `$ 1.200.000`.
+/// `1200000` -> `$ 1.200.000`
 String formatCop(int value) {
   final digits = value.abs().toString();
   final buffer = StringBuffer();
@@ -470,83 +479,27 @@ String formatCop(int value) {
   return '${value < 0 ? '-' : ''}\$ $buffer';
 }
 
-// ====================================================================
-// core/widgets/status_chip.dart
-// ====================================================================
-
-/// Tono semántico de un estado (cotización, crédito, entrega, abono).
-enum StatusTone { success, warning, danger, neutral }
-
-/// Etiqueta redondeada de estado: "Aprobada", "Vencido", "Programado"...
-class StatusChip extends StatelessWidget {
-  const StatusChip({
-    super.key,
-    required this.label,
-    required this.tone,
-  });
-
-  final String label;
-  final StatusTone tone;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = context.palette;
-
-    final (Color fg, Color bg) = switch (tone) {
-      StatusTone.success => (AppColors.success, palette.successSoft),
-      StatusTone.warning => (AppColors.warning, palette.warningSoft),
-      StatusTone.danger => (AppColors.danger, palette.dangerSoft),
-      StatusTone.neutral => (palette.textSecondary, palette.surfaceAlt),
-    };
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: fg,
-          fontSize: 12,
-          fontWeight: FontWeight.w700,
-        ),
-      ),
-    );
-  }
-}
-
-// ====================================================================
-// core/widgets/theme_toggle_button.dart
-// ====================================================================
-
-/// Botón cuadrado de sol/luna que alterna el [ThemeMode] de la app.
+/// Botón cuadrado de sol/luna de las cabeceras.
 class ThemeToggleButton extends StatelessWidget {
-  const ThemeToggleButton({super.key, this.onHeader = true});
-
-  /// `true` cuando se dibuja sobre la cabecera azul.
-  final bool onHeader;
+  const ThemeToggleButton({super.key});
 
   @override
   Widget build(BuildContext context) {
     final palette = context.palette;
-    final Color fg = onHeader ? palette.onHeader : palette.textSecondary;
-
     return Material(
-      color: onHeader ? palette.headerOverlay : palette.surfaceAlt,
+      color: palette.headerOverlay,
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         onTap: ThemeController.instance.toggle,
         borderRadius: BorderRadius.circular(12),
         child: Padding(
-          padding: const EdgeInsets.all(10),
+          padding: const EdgeInsets.all(9),
           child: Icon(
             palette.isDark
                 ? Icons.light_mode_outlined
                 : Icons.dark_mode_outlined,
-            color: fg,
-            size: 22,
+            color: palette.onHeader,
+            size: 21,
           ),
         ),
       ),
@@ -554,30 +507,22 @@ class ThemeToggleButton extends StatelessWidget {
   }
 }
 
-// ====================================================================
-// core/widgets/mira_header.dart
-// ====================================================================
-
-/// Cabecera azul marino con título, botón de volver opcional y el
-/// interruptor de tema. La usan todas las pantallas interiores.
+/// Cabecera azul marino: título, volver opcional y botón de tema.
 class MiraHeader extends StatelessWidget {
   const MiraHeader({
     super.key,
     required this.title,
     this.showBack,
-    this.action,
+    this.subtitle,
   });
 
   final String title;
 
-  /// Si es `null` el botón de volver aparece solo cuando la ruta se
-  /// puede desapilar, de modo que las pantallas raíz de la barra
-  /// inferior salgan sin flecha.
+  /// `null` = se muestra solo si hay una ruta a la que volver.
   final bool? showBack;
 
-  /// Widget extra a la izquierda del botón de tema (por ejemplo un botón
-  /// de "Nueva").
-  final Widget? action;
+  /// Línea pequeña encima del título (el saludo de Inicio).
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -601,14 +546,26 @@ class MiraHeader extends StatelessWidget {
                   tooltip: 'Volver',
                 ),
               Expanded(
-                child: Text(
-                  title,
-                  style: theme.textTheme.titleLarge?.copyWith(
-                    color: palette.onHeader,
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (subtitle != null)
+                      Text(
+                        subtitle!,
+                        style: theme.textTheme.bodyMedium
+                            ?.copyWith(color: palette.onHeaderMuted),
+                      ),
+                    Text(
+                      title,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        color: palette.onHeader,
+                        fontSize: subtitle == null ? 20 : 22,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              if (action != null) ...[action!, const SizedBox(width: 8)],
               const ThemeToggleButton(),
             ],
           ),
@@ -618,102 +575,284 @@ class MiraHeader extends StatelessWidget {
   }
 }
 
-// ====================================================================
-// Features/Auth/presentation/widgets/mira_logo.dart
-// ====================================================================
+enum EstadoTono { exito, aviso, error, neutro }
 
+/// Etiqueta redondeada de estado (Aprobada, Al día, Entregado...).
+class EstadoChip extends StatelessWidget {
+  const EstadoChip({super.key, required this.label, required this.tono});
 
-
-
-/// Logo de MiraLlantas: un rin dibujado dentro de una tarjeta redondeada.
-///
-/// Se usa en el splash y en el login. Al ser vectorial no depende de
-/// ningun asset externo.
-class MiraLogo extends StatelessWidget {
-  const MiraLogo({super.key, this.size = 84});
-
-  final double size;
+  final String label;
+  final EstadoTono tono;
 
   @override
   Widget build(BuildContext context) {
     final palette = context.palette;
+    final (Color fg, Color bg) = switch (tono) {
+      EstadoTono.exito => (AppColors.success, palette.successSoft),
+      EstadoTono.aviso => (AppColors.warning, palette.warningSoft),
+      EstadoTono.error => (AppColors.danger, palette.dangerSoft),
+      EstadoTono.neutro => (palette.textSecondary, palette.surfaceAlt),
+    };
     return Container(
-      width: size,
-      height: size,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
-        color: palette.header,
-        borderRadius: BorderRadius.circular(size * 0.28),
-        boxShadow: [
-          BoxShadow(
-            color: palette.shadow,
-            blurRadius: 18,
-            offset: const Offset(0, 8),
-          ),
-        ],
+        color: bg,
+        borderRadius: BorderRadius.circular(20),
       ),
-      child: Center(
-        child: CustomPaint(
-          size: Size.square(size * 0.56),
-          painter: _WheelPainter(),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: fg,
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
         ),
       ),
     );
   }
 }
 
-class _WheelPainter extends CustomPainter {
-  static const Color _tire = Color(0xFF11151C);
-  static const Color _rim = Color(0xFFC9D2DC);
-  static const Color _accentRing = Color(0xFF7A2E3E);
+/// Tarjeta blanca estándar de toda la app.
+class MiraCard extends StatelessWidget {
+  const MiraCard({
+    super.key,
+    required this.child,
+    this.padding = const EdgeInsets.all(16),
+    this.onTap,
+    this.highlight = false,
+  });
+
+  final Widget child;
+  final EdgeInsets padding;
+  final VoidCallback? onTap;
+
+  /// Borde amarillo para las tarjetas destacadas de Inicio.
+  final bool highlight;
 
   @override
-  void paint(Canvas canvas, Size size) {
-    final center = size.center(Offset.zero);
-    final r = size.width / 2;
-
-    canvas.drawCircle(center, r, Paint()..color = _tire);
-    canvas.drawCircle(
-      center,
-      r * 0.86,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = r * 0.12
-        ..color = _accentRing,
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    final decoration = BoxDecoration(
+      color: palette.surface,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(
+        color: highlight ? AppColors.accent : palette.border,
+        width: highlight ? 1.4 : 1,
+      ),
+      boxShadow: palette.isDark
+          ? null
+          : [
+              BoxShadow(
+                color: palette.shadow,
+                blurRadius: 10,
+                offset: const Offset(0, 3),
+              ),
+            ],
     );
-    canvas.drawCircle(center, r * 0.72, Paint()..color = _rim);
-    canvas.drawCircle(center, r * 0.60, Paint()..color = _tire);
 
-    // Cinco radios del rin.
-    final spoke = Paint()
-      ..color = _rim
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = r * 0.16
-      ..strokeCap = StrokeCap.round;
-    for (var i = 0; i < 5; i++) {
-      final angle = (i * 2 * math.pi / 5) - math.pi / 2;
-      final end = Offset(
-        center.dx + r * 0.52 * math.cos(angle),
-        center.dy + r * 0.52 * math.sin(angle),
+    if (onTap == null) {
+      return Container(
+        padding: padding,
+        decoration: decoration,
+        child: child,
       );
-      canvas.drawLine(center, end, spoke);
     }
-    canvas.drawCircle(center, r * 0.16, Paint()..color = _rim);
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Ink(
+          padding: padding,
+          decoration: decoration,
+          child: child,
+        ),
+      ),
+    );
   }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-// ====================================================================
-// Features/Auth/presentation/widgets/custom_text_field.dart
-// ====================================================================
+/// Pestañas de la barra inferior.
+enum MiraTab { inicio, cotizaciones, cartera, entregas, perfil }
 
-/// Campo de texto reutilizable en todos los formularios de la app.
-///
-/// Toma su apariencia del `inputDecorationTheme`, por lo que no declara
-/// colores propios.
-class CustomTextField extends StatefulWidget {
-  const CustomTextField({
+const List<({IconData icon, IconData active, String label})> _tabItems = [
+  (icon: Icons.home_outlined, active: Icons.home, label: 'Inicio'),
+  (
+    icon: Icons.description_outlined,
+    active: Icons.description,
+    label: 'Cotizaciones'
+  ),
+  (
+    icon: Icons.account_balance_wallet_outlined,
+    active: Icons.account_balance_wallet,
+    label: 'Cartera'
+  ),
+  (
+    icon: Icons.local_shipping_outlined,
+    active: Icons.local_shipping,
+    label: 'Entregas'
+  ),
+  (icon: Icons.person_outline, active: Icons.person, label: 'Perfil'),
+];
+
+/// Barra inferior flotante: el círculo amarillo se desliza hasta la
+/// pestaña elegida y sobresale de la barra, con el icono saltando dentro
+/// mientras la etiqueta se queda abajo.
+class MiraNavBar extends StatelessWidget {
+  const MiraNavBar({
+    super.key,
+    required this.current,
+    required this.onSelected,
+  });
+
+  final MiraTab current;
+  final ValueChanged<MiraTab> onSelected;
+
+  static const double alto = 68;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    final index = current.index;
+    // -1 = primera pestaña, 1 = última; el resto queda repartido.
+    final x = -1 + 2 * index / (_tabItems.length - 1);
+
+    return SafeArea(
+      top: false,
+      child: Container(
+        height: alto,
+        margin: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+        decoration: BoxDecoration(
+          color: palette.surface,
+          borderRadius: BorderRadius.circular(26),
+          border: Border.all(color: palette.border),
+          boxShadow: [
+            BoxShadow(
+              color: palette.shadow,
+              blurRadius: 20,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: Stack(
+          clipBehavior: Clip.none,
+          alignment: Alignment.center,
+          children: [
+            AnimatedAlign(
+              alignment: Alignment(x, -1),
+              duration: const Duration(milliseconds: 420),
+              curve: Curves.easeOutBack,
+              child: FractionallySizedBox(
+                widthFactor: 1 / _tabItems.length,
+                heightFactor: 46 / alto,
+                child: Transform.translate(
+                  // Saca el círculo por encima del borde de la barra.
+                  offset: const Offset(0, -16),
+                  child: Container(
+                    width: 46,
+                    height: 46,
+                    decoration: BoxDecoration(
+                      color: AppColors.accent,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: palette.surface, width: 3),
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppColors.accent.withAlpha(110),
+                          blurRadius: 14,
+                          offset: const Offset(0, 5),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Row(
+              children: [
+                for (var i = 0; i < _tabItems.length; i++)
+                  Expanded(
+                    child: _NavItem(
+                      item: _tabItems[i],
+                      selected: i == index,
+                      onTap: () => onSelected(MiraTab.values[i]),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _NavItem extends StatelessWidget {
+  const _NavItem({
+    required this.item,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final ({IconData icon, IconData active, String label}) item;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+
+    return InkWell(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        onTap();
+      },
+      borderRadius: BorderRadius.circular(22),
+      child: Semantics(
+        selected: selected,
+        button: true,
+        label: item.label,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            AnimatedSlide(
+              // El icono activo salta hasta el centro del círculo.
+              offset: Offset(0, selected ? -0.83 : 0),
+              duration: const Duration(milliseconds: 420),
+              curve: Curves.easeOutBack,
+              child: AnimatedScale(
+                scale: selected ? 1.05 : 1,
+                duration: const Duration(milliseconds: 300),
+                child: Icon(
+                  selected ? item.active : item.icon,
+                  size: 23,
+                  color: selected ? AppColors.onAccent : palette.textSecondary,
+                ),
+              ),
+            ),
+            const SizedBox(height: 3),
+            AnimatedDefaultTextStyle(
+              duration: const Duration(milliseconds: 260),
+              style: TextStyle(
+                fontSize: 10.5,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                color:
+                    selected ? AppColors.accentDark : palette.textSecondary,
+              ),
+              child: Text(
+                item.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Campo de formulario con etiqueta encima.
+class CampoTexto extends StatefulWidget {
+  const CampoTexto({
     super.key,
     required this.label,
     this.hint,
@@ -721,7 +860,7 @@ class CustomTextField extends StatefulWidget {
     this.prefixIcon,
     this.keyboardType,
     this.obscure = false,
-    this.enabled = true,
+    this.readOnly = false,
     this.textInputAction,
     this.onSubmitted,
   });
@@ -731,18 +870,16 @@ class CustomTextField extends StatefulWidget {
   final TextEditingController? controller;
   final IconData? prefixIcon;
   final TextInputType? keyboardType;
-
-  /// Si es `true` el campo nace oculto y muestra el boton de ojo.
   final bool obscure;
-  final bool enabled;
+  final bool readOnly;
   final TextInputAction? textInputAction;
   final ValueChanged<String>? onSubmitted;
 
   @override
-  State<CustomTextField> createState() => _CustomTextFieldState();
+  State<CampoTexto> createState() => _CampoTextoState();
 }
 
-class _CustomTextFieldState extends State<CustomTextField> {
+class _CampoTextoState extends State<CampoTexto> {
   late bool _hidden = widget.obscure;
 
   @override
@@ -755,8 +892,8 @@ class _CustomTextFieldState extends State<CustomTextField> {
         const SizedBox(height: 8),
         TextField(
           controller: widget.controller,
-          enabled: widget.enabled,
           obscureText: _hidden,
+          readOnly: widget.readOnly,
           keyboardType: widget.keyboardType,
           textInputAction: widget.textInputAction,
           onSubmitted: widget.onSubmitted,
@@ -768,12 +905,12 @@ class _CustomTextFieldState extends State<CustomTextField> {
             suffixIcon: widget.obscure
                 ? IconButton(
                     onPressed: () => setState(() => _hidden = !_hidden),
+                    tooltip: _hidden ? 'Mostrar' : 'Ocultar',
                     icon: Icon(
                       _hidden
                           ? Icons.visibility_outlined
                           : Icons.visibility_off_outlined,
                     ),
-                    tooltip: _hidden ? 'Mostrar' : 'Ocultar',
                   )
                 : null,
           ),
@@ -783,1156 +920,319 @@ class _CustomTextFieldState extends State<CustomTextField> {
   }
 }
 
-// ====================================================================
-// Features/Auth/presentation/widgets/custom_button.dart
-// ====================================================================
-
-/// Boton reutilizable con las dos variantes que usa la app:
-/// solida (amarillo de marca) y contorneada.
-class CustomButton extends StatelessWidget {
-  const CustomButton({
+/// Fila "etiqueta ....... valor" de las tarjetas de detalle.
+class FilaDato extends StatelessWidget {
+  const FilaDato({
     super.key,
     required this.label,
-    this.onPressed,
-    this.icon,
-    this.variant = ButtonVariant.filled,
+    required this.value,
+    this.strong = true,
   });
-
-  const CustomButton.outlined({
-    super.key,
-    required this.label,
-    this.onPressed,
-    this.icon,
-  }) : variant = ButtonVariant.outlined;
 
   final String label;
-  final VoidCallback? onPressed;
-  final IconData? icon;
-  final ButtonVariant variant;
-
-  @override
-  Widget build(BuildContext context) {
-    // `scaleDown` evita que una etiqueta larga parta el botón en dos
-    // líneas en pantallas angostas.
-    final label = FittedBox(
-      fit: BoxFit.scaleDown,
-      child: Text(this.label, maxLines: 1),
-    );
-    final child = icon == null
-        ? label
-        : Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 20),
-              const SizedBox(width: 10),
-              Flexible(child: label),
-            ],
-          );
-
-    if (variant == ButtonVariant.outlined) {
-      return OutlinedButton(onPressed: onPressed, child: child);
-    }
-    return ElevatedButton(onPressed: onPressed, child: child);
-  }
-}
-
-enum ButtonVariant { filled, outlined }
-
-// ====================================================================
-// Features/Auth/presentation/widgets/role_selector.dart
-// ====================================================================
-
-/// Roles disponibles en el login. Determina a que dashboard se navega.
-enum UserRole { usuario, administrador }
-
-extension UserRoleLabel on UserRole {
-  String get label =>
-      this == UserRole.usuario ? 'Usuario' : 'Administrador';
-}
-
-/// Selector tipo segmented control para elegir el rol antes de entrar.
-class RoleSelector extends StatelessWidget {
-  const RoleSelector({
-    super.key,
-    required this.value,
-    required this.onChanged,
-  });
-
-  final UserRole value;
-  final ValueChanged<UserRole> onChanged;
+  final String value;
+  final bool strong;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final palette = context.palette;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 7),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            flex: 2,
+            child: Text(label, style: theme.textTheme.bodyMedium),
+          ),
+          Expanded(
+            flex: 3,
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: strong
+                  ? theme.textTheme.titleMedium
+                  : theme.textTheme.bodyLarge,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
+/// Dato pequeño en dos líneas (etiqueta arriba, valor abajo).
+class DatoCompacto extends StatelessWidget {
+  const DatoCompacto({super.key, required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Acceder como', style: theme.textTheme.labelLarge),
-        const SizedBox(height: 8),
-        Container(
-          decoration: BoxDecoration(
-            color: palette.inputFill,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Row(
-            children: [
-              for (final role in UserRole.values)
-                Expanded(
-                  child: _RoleTab(
-                    role: role,
-                    selected: role == value,
-                    onTap: () => onChanged(role),
-                  ),
-                ),
-            ],
-          ),
-        ),
+        Text(label, style: theme.textTheme.bodySmall),
+        const SizedBox(height: 2),
+        Text(value, style: theme.textTheme.titleMedium),
       ],
     );
   }
 }
 
-class _RoleTab extends StatelessWidget {
-  const _RoleTab({
-    required this.role,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final UserRole role;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = context.palette;
-    final selectedFill = palette.accentSoft;
-
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        height: 54,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: selected ? selectedFill : Colors.transparent,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: selected ? AppColors.accent : Colors.transparent,
-            width: 1.6,
-          ),
-        ),
-        child: Text(
-          role.label,
-          style: TextStyle(
-            fontSize: 15,
-            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-            color: selected
-                ? (palette.isDark ? AppColors.accent : AppColors.accentDark)
-                : palette.textSecondary,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ====================================================================
-// Features/dashboard/presentation/widgets/mira_bottom_nav.dart
-// ====================================================================
-
-/// Barra inferior comun a los dos dashboards.
-class MiraBottomNav extends StatelessWidget {
-  const MiraBottomNav({
+/// Barra de progreso redondeada.
+class BarraProgreso extends StatelessWidget {
+  const BarraProgreso({
     super.key,
-    required this.currentIndex,
-    required this.onTap,
-  });
-
-  final int currentIndex;
-  final ValueChanged<int> onTap;
-
-  static const List<BottomNavigationBarItem> items = [
-    BottomNavigationBarItem(
-      icon: Icon(Icons.home_outlined),
-      activeIcon: Icon(Icons.home),
-      label: 'Inicio',
-    ),
-    BottomNavigationBarItem(
-      icon: Icon(Icons.description_outlined),
-      activeIcon: Icon(Icons.description),
-      label: 'Cotizaciones',
-    ),
-    BottomNavigationBarItem(
-      icon: Icon(Icons.credit_card_outlined),
-      activeIcon: Icon(Icons.credit_card),
-      label: 'Créditos',
-    ),
-    BottomNavigationBarItem(
-      icon: Icon(Icons.local_shipping_outlined),
-      activeIcon: Icon(Icons.local_shipping),
-      label: 'Entregas',
-    ),
-    BottomNavigationBarItem(
-      icon: Icon(Icons.person_outline),
-      activeIcon: Icon(Icons.person),
-      label: 'Perfil',
-    ),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = context.palette;
-    return Container(
-      decoration: BoxDecoration(
-        color: palette.surface,
-        border: Border(top: BorderSide(color: palette.border)),
-      ),
-      child: SafeArea(
-        top: false,
-        child: BottomNavigationBar(
-          currentIndex: currentIndex,
-          onTap: onTap,
-          items: items,
-        ),
-      ),
-    );
-  }
-}
-
-/// Barra inferior autónoma: deduce la pestaña activa de la ruta actual y
-/// navega sola. Se pone en `bottomNavigationBar` de cada pantalla para
-/// que la barra siga visible en toda la app.
-class MiraTabBar extends StatelessWidget {
-  const MiraTabBar({super.key});
-
-  /// Ruta raíz de cada pestaña (`null` = Inicio, que es la ruta base).
-  static const List<String?> tabRoutes = [
-    null,
-    AppRoutes.quotes,
-    AppRoutes.credits,
-    AppRoutes.deliveries,
-    AppRoutes.profile,
-  ];
-
-  /// Pestaña que corresponde a cada ruta interior.
-  static const Map<String, int> _indexByRoute = {
-    AppRoutes.userDashboard: 0,
-    AppRoutes.adminDashboard: 0,
-    AppRoutes.quotes: 1,
-    AppRoutes.newQuote: 1,
-    AppRoutes.quoteDetail: 1,
-    AppRoutes.credits: 2,
-    AppRoutes.creditDetail: 2,
-    AppRoutes.newPayment: 2,
-    AppRoutes.paymentsHistory: 2,
-    AppRoutes.deliveries: 3,
-    AppRoutes.deliveryDetail: 3,
-    AppRoutes.profile: 4,
-    AppRoutes.editProfile: 4,
-  };
-
-  /// Vuelve a la raíz (el dashboard) y abre la pestaña pedida.
-  static void goToTab(BuildContext context, int index) {
-    final route = tabRoutes[index];
-    final navigator = Navigator.of(context);
-    navigator.popUntil((r) => r.isFirst);
-    if (route != null) navigator.pushNamed(route);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final name = ModalRoute.of(context)?.settings.name;
-    return MiraBottomNav(
-      currentIndex: _indexByRoute[name] ?? 0,
-      onTap: (index) => goToTab(context, index),
-    );
-  }
-}
-
-// ====================================================================
-// Features/dashboard/presentation/widgets/module_card.dart
-// ====================================================================
-
-/// Definicion de un modulo de la grilla del dashboard (datos mock).
-class ModuleItem {
-  const ModuleItem({
-    required this.label,
-    required this.icon,
-    this.standout = false,
-    this.onTap,
-  });
-
-  final String label;
-  final IconData icon;
-
-  /// Resalta la tarjeta con el amarillo institucional (se usa para
-  /// "Cerrar sesión", que no es una acción destructiva).
-  final bool standout;
-  final VoidCallback? onTap;
-}
-
-/// Tarjeta cuadrada con icono outline y etiqueta, usada en la grilla
-/// de modulos de ambos dashboards.
-class ModuleCard extends StatelessWidget {
-  const ModuleCard({super.key, required this.item});
-
-  final ModuleItem item;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = context.palette;
-    final theme = Theme.of(context);
-    final Color iconBg =
-        item.standout ? palette.accentSoft : palette.iconTileBg;
-    final Color iconFg =
-        item.standout ? AppColors.accentDark : palette.iconTileFg;
-
-    return Material(
-      color: palette.surface,
-      borderRadius: BorderRadius.circular(16),
-      child: InkWell(
-        onTap: item.onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: item.standout ? AppColors.accent : palette.border,
-            ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Container(
-                width: 46,
-                height: 46,
-                decoration: BoxDecoration(
-                  color: iconBg,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(item.icon, color: iconFg, size: 24),
-              ),
-              const SizedBox(height: 14),
-              Text(
-                item.label,
-                style: theme.textTheme.titleMedium?.copyWith(
-                  color: palette.textPrimary,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ====================================================================
-// Features/dashboard/presentation/widgets/dashboard_header.dart
-// ====================================================================
-
-/// Cabecera azul marino del dashboard con el saludo y el botón de tema.
-class DashboardHeader extends StatelessWidget {
-  const DashboardHeader({
-    super.key,
-    required this.name,
-    this.roleLabel,
-  });
-
-  final String name;
-
-  /// Texto amarillo bajo el nombre (por ejemplo "ADMINISTRADOR").
-  final String? roleLabel;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = context.palette;
-    final theme = Theme.of(context);
-
-    return Container(
-      width: double.infinity,
-      color: palette.header,
-      child: SafeArea(
-        bottom: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 12, 12, 20),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Bienvenido de nuevo,',
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: palette.onHeaderMuted,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      name,
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        color: palette.onHeader,
-                        fontSize: 22,
-                      ),
-                    ),
-                    if (roleLabel != null) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        roleLabel!,
-                        style: const TextStyle(
-                          color: AppColors.accent,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 1.2,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              const ThemeToggleButton(),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ====================================================================
-// Features/dashboard/presentation/widgets/credit_balance_card.dart
-// ====================================================================
-
-/// Tarjeta destacada del dashboard de Usuario: saldo en credito
-/// disponible y barra de cupo usado.
-class CreditBalanceCard extends StatelessWidget {
-  const CreditBalanceCard({
-    super.key,
-    required this.available,
-    required this.used,
-    required this.total,
-  });
-
-  final int available;
-  final int used;
-  final int total;
-
-  double get _progress => total == 0 ? 0 : used / total;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final palette = context.palette;
-    final percent = (_progress * 100).round();
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: palette.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.accent, width: 1.4),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Saldo en crédito disponible',
-                      style: theme.textTheme.bodyMedium,
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      formatCop(available),
-                      style: theme.textTheme.headlineLarge,
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: AppColors.accent,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Icon(
-                  Icons.credit_card,
-                  color: AppColors.onAccent,
-                  size: 22,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 18),
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'Usado: ${formatCop(used)}',
-                  style: theme.textTheme.bodySmall,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'Cupo total: ${formatCop(total)}',
-                  style: theme.textTheme.bodySmall,
-                  textAlign: TextAlign.right,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: LinearProgressIndicator(
-              value: _progress,
-              minHeight: 8,
-              backgroundColor: palette.trackBg,
-              valueColor:
-                  const AlwaysStoppedAnimation<Color>(AppColors.accent),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '$percent% del cupo utilizado',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: AppColors.accentDark,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ====================================================================
-// Features/dashboard/presentation/widgets/admin_summary_card.dart
-// ====================================================================
-
-/// Una celda del resumen operativo: numero grande + descripcion.
-class SummaryStat {
-  const SummaryStat({
     required this.value,
-    required this.label,
-    this.highlight = false,
+    this.color = AppColors.accent,
+    this.height = 8,
   });
 
-  final String value;
-  final String label;
-
-  /// Pinta el numero en rojo (indicadores que requieren atencion).
-  final bool highlight;
-}
-
-/// Tarjeta destacada del dashboard de Administrador: resumen operativo
-/// del dia en una grilla de 2x2.
-class AdminSummaryCard extends StatelessWidget {
-  const AdminSummaryCard({super.key, required this.stats});
-
-  final List<SummaryStat> stats;
+  final double value;
+  final Color color;
+  final double height;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final palette = context.palette;
-
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: palette.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.accent, width: 1.4),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('RESUMEN OPERATIVO DEL DÍA',
-              style: theme.textTheme.labelSmall),
-          const SizedBox(height: 14),
-          GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            mainAxisSpacing: 12,
-            crossAxisSpacing: 12,
-            childAspectRatio: 1.6,
-            children: [
-              for (final stat in stats) _StatTile(stat: stat),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _StatTile extends StatelessWidget {
-  const _StatTile({required this.stat});
-
-  final SummaryStat stat;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final palette = context.palette;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: palette.surfaceAlt,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: palette.border),
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            stat.value,
-            style: theme.textTheme.headlineLarge?.copyWith(
-              fontSize: 26,
-              color: stat.highlight ? AppColors.danger : palette.textPrimary,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Flexible(
-            child: Text(
-              stat.label,
-              style: theme.textTheme.bodySmall,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: value),
+        duration: const Duration(milliseconds: 600),
+        curve: Curves.easeOutCubic,
+        builder: (context, v, _) => LinearProgressIndicator(
+          value: v,
+          minHeight: height,
+          backgroundColor: palette.trackBg,
+          valueColor: AlwaysStoppedAnimation<Color>(color),
+        ),
       ),
     );
   }
 }
 
 // ====================================================================
-// Features/quotes/data/mock_quotes.dart
+// 4. Datos mock (Cotizaciones, Entregas, Perfil y carrusel)
 // ====================================================================
 
-/// Estado de una cotización.
-enum QuoteStatus { aprobada, pendiente, rechazada }
-
-extension QuoteStatusView on QuoteStatus {
-  String get label => switch (this) {
-        QuoteStatus.aprobada => 'Aprobada',
-        QuoteStatus.pendiente => 'Pendiente',
-        QuoteStatus.rechazada => 'Rechazada',
-      };
-
-  StatusTone get tone => switch (this) {
-        QuoteStatus.aprobada => StatusTone.success,
-        QuoteStatus.pendiente => StatusTone.warning,
-        QuoteStatus.rechazada => StatusTone.danger,
-      };
-}
-
-/// Línea de una cotización.
-class QuoteItem {
-  const QuoteItem({
-    required this.description,
-    required this.quantity,
-    required this.unitPrice,
+class ItemCotizacion {
+  const ItemCotizacion({
+    required this.descripcion,
+    required this.cantidad,
+    required this.valorUnitario,
   });
 
-  final String description;
-  final int quantity;
-  final int unitPrice;
+  final String descripcion;
+  final int cantidad;
+  final int valorUnitario;
 
-  int get subtotal => quantity * unitPrice;
+  int get subtotal => cantidad * valorUnitario;
 }
 
-/// Cotización de ejemplo (sin backend).
-class Quote {
-  const Quote({
-    required this.code,
-    required this.date,
-    required this.client,
-    required this.productType,
-    required this.paymentMethod,
-    required this.status,
+class Cotizacion {
+  const Cotizacion({
+    required this.codigo,
+    required this.fecha,
+    required this.cliente,
+    required this.tipo,
+    required this.pago,
+    required this.estado,
+    required this.tono,
     required this.items,
   });
 
-  final String code;
-  final String date;
-  final String client;
-  final String productType;
-  final String paymentMethod;
-  final QuoteStatus status;
-  final List<QuoteItem> items;
+  final String codigo;
+  final String fecha;
+  final String cliente;
+  final String tipo;
+  final String pago;
+  final String estado;
+  final EstadoTono tono;
+  final List<ItemCotizacion> items;
 
-  int get total =>
-      items.fold(0, (sum, item) => sum + item.subtotal);
+  int get total => items.fold(0, (sum, i) => sum + i.subtotal);
 }
 
-/// Listado mock que alimenta las pantallas de cotizaciones.
-const List<Quote> mockQuotes = [
-  Quote(
-    code: 'COT-2025-001',
-    date: '15 jul. 2025',
-    client: 'Carlos Ramírez',
-    productType: 'Llanta nueva',
-    paymentMethod: 'Crédito',
-    status: QuoteStatus.aprobada,
+const List<Cotizacion> mockCotizaciones = [
+  Cotizacion(
+    codigo: 'COT-2025-001',
+    fecha: '15 jul. 2025',
+    cliente: 'Carlos Ramírez',
+    tipo: 'Llanta nueva',
+    pago: 'Crédito',
+    estado: 'Aprobada',
+    tono: EstadoTono.exito,
     items: [
-      QuoteItem(
-        description: 'Llanta 205/65R15 Michelin',
-        quantity: 4,
-        unitPrice: 280000,
+      ItemCotizacion(
+        descripcion: 'Llanta 205/65R15 Michelin',
+        cantidad: 4,
+        valorUnitario: 280000,
       ),
-      QuoteItem(
-        description: 'Instalación y balanceo',
-        quantity: 4,
-        unitPrice: 20000,
+      ItemCotizacion(
+        descripcion: 'Instalación y balanceo',
+        cantidad: 4,
+        valorUnitario: 20000,
       ),
     ],
   ),
-  Quote(
-    code: 'COT-2025-002',
-    date: '22 jul. 2025',
-    client: 'Transportes del Valle',
-    productType: 'Reencauche',
-    paymentMethod: 'Contado',
-    status: QuoteStatus.pendiente,
+  Cotizacion(
+    codigo: 'COT-2025-002',
+    fecha: '22 jul. 2025',
+    cliente: 'Carlos Ramírez',
+    tipo: 'Reencauche',
+    pago: 'Contado',
+    estado: 'Pendiente',
+    tono: EstadoTono.aviso,
     items: [
-      QuoteItem(
-        description: 'Reencauche 295/80R22.5',
-        quantity: 3,
-        unitPrice: 150000,
+      ItemCotizacion(
+        descripcion: 'Reencauche 295/80R22.5',
+        cantidad: 3,
+        valorUnitario: 150000,
       ),
     ],
   ),
-  Quote(
-    code: 'COT-2025-003',
-    date: '3 ago. 2025',
-    client: 'Carlos Ramírez',
-    productType: 'Llanta nueva',
-    paymentMethod: 'Crédito',
-    status: QuoteStatus.rechazada,
+  Cotizacion(
+    codigo: 'COT-2025-003',
+    fecha: '3 ago. 2025',
+    cliente: 'Carlos Ramírez',
+    tipo: 'Llanta nueva',
+    pago: 'Crédito',
+    estado: 'Rechazada',
+    tono: EstadoTono.error,
     items: [
-      QuoteItem(
-        description: 'Llanta 225/45R17 Bridgestone',
-        quantity: 2,
-        unitPrice: 445000,
+      ItemCotizacion(
+        descripcion: 'Llanta 225/45R17 Bridgestone',
+        cantidad: 2,
+        valorUnitario: 445000,
       ),
     ],
   ),
 ];
 
-/// Producto del catálogo que se puede agregar a una cotización.
-class Product {
-  const Product({
-    required this.name,
-    required this.brand,
-    required this.size,
-    required this.price,
-    required this.retread,
-    this.stock = 0,
+class Entrega {
+  const Entrega({
+    required this.codigo,
+    required this.direccion,
+    required this.fechaProgramada,
+    required this.estado,
+    required this.tono,
+    required this.cotizacion,
+    this.fechaEntrega,
+    this.motivoCancelacion,
   });
 
-  final String name;
-  final String brand;
-  final String size;
-  final int price;
-
-  /// `true` si es reencauche; `false` si es llanta nueva.
-  final bool retread;
-  final int stock;
-
-  String get typeLabel => retread ? 'Reencauche' : 'Llanta nueva';
+  final String codigo;
+  final String direccion;
+  final String fechaProgramada;
+  final String estado;
+  final EstadoTono tono;
+  final String cotizacion;
+  final String? fechaEntrega;
+  final String? motivoCancelacion;
 }
 
-/// Catálogo mock que se muestra al armar una cotización.
-const List<Product> mockProducts = [
-  Product(
-    name: 'Michelin Energy XM2',
-    brand: 'Michelin',
-    size: '205/65R15',
-    price: 280000,
-    retread: false,
-    stock: 24,
+const List<Entrega> mockEntregas = [
+  Entrega(
+    codigo: 'ENT-001',
+    direccion: 'Cra. 45 #80-23, Medellín',
+    fechaProgramada: '18 jul. 2025',
+    fechaEntrega: '18 jul. 2025',
+    estado: 'Entregado',
+    tono: EstadoTono.exito,
+    cotizacion: 'COT-2025-001',
   ),
-  Product(
-    name: 'Bridgestone Turanza T005',
-    brand: 'Bridgestone',
-    size: '225/45R17',
-    price: 445000,
-    retread: false,
-    stock: 12,
+  Entrega(
+    codigo: 'ENT-002',
+    direccion: 'Cl. 10 #5-67, El Poblado',
+    fechaProgramada: '28 ago. 2025',
+    estado: 'Programado',
+    tono: EstadoTono.aviso,
+    cotizacion: 'COT-2025-002',
   ),
-  Product(
-    name: 'Goodyear EfficientGrip',
-    brand: 'Goodyear',
-    size: '195/60R15',
-    price: 265000,
-    retread: false,
-    stock: 18,
-  ),
-  Product(
-    name: 'Pirelli Scorpion ATR',
-    brand: 'Pirelli',
-    size: '265/70R16',
-    price: 690000,
-    retread: false,
-    stock: 6,
-  ),
-  Product(
-    name: 'Reencauche liso de carga',
-    brand: 'MiraLlantas',
-    size: '295/80R22.5',
-    price: 150000,
-    retread: true,
-    stock: 30,
-  ),
-  Product(
-    name: 'Reencauche mixto tracción',
-    brand: 'MiraLlantas',
-    size: '11R22.5',
-    price: 165000,
-    retread: true,
-    stock: 15,
-  ),
-  Product(
-    name: 'Reencauche urbano',
-    brand: 'MiraLlantas',
-    size: '215/75R17.5',
-    price: 132000,
-    retread: true,
-    stock: 21,
-  ),
-  Product(
-    name: 'Instalación y balanceo',
-    brand: 'Servicio',
-    size: 'Por llanta',
-    price: 20000,
-    retread: false,
-    stock: 99,
+  Entrega(
+    codigo: 'ENT-003',
+    direccion: 'Av. El Dorado #68C-61, Bogotá',
+    fechaProgramada: '10 ago. 2025',
+    estado: 'Cancelado',
+    tono: EstadoTono.error,
+    cotizacion: 'COT-2025-003',
+    motivoCancelacion: 'Cliente solicitó cancelación por cambio de domicilio.',
   ),
 ];
 
-// ====================================================================
-// Features/credits/data/mock_credits.dart
-// ====================================================================
+/// Datos del cliente en sesión. Editables desde Perfil (en memoria).
+class PerfilUsuario {
+  PerfilUsuario._();
 
-/// Estado de un crédito.
-enum CreditStatus { alDia, vencido }
+  static final PerfilUsuario instance = PerfilUsuario._();
 
-extension CreditStatusView on CreditStatus {
-  String get label =>
-      this == CreditStatus.alDia ? 'Al día' : 'Vencido';
+  String nombre = 'Carlos Ramírez';
+  String documento = '1023456789';
+  String correo = 'carlos.ramirez@email.com';
+  String telefono = '300 456 7890';
+  String direccion = 'Cra. 45 #80-23, Medellín, Antioquia';
 
-  StatusTone get tone =>
-      this == CreditStatus.alDia ? StatusTone.success : StatusTone.danger;
-}
-
-/// Abono registrado sobre un crédito.
-class Payment {
-  const Payment({
-    required this.amount,
-    required this.date,
-    required this.method,
-    this.confirmed = true,
-  });
-
-  final int amount;
-  final String date;
-  final String method;
-  final bool confirmed;
-}
-
-/// Crédito de ejemplo (sin backend).
-class Credit {
-  const Credit({
-    required this.code,
-    required this.status,
-    required this.dueDate,
-    required this.startDate,
-    required this.total,
-    required this.paid,
-    required this.monthlyFee,
-    required this.payments,
-  });
-
-  final String code;
-  final CreditStatus status;
-  final String dueDate;
-  final String startDate;
-  final int total;
-  final int paid;
-  final int monthlyFee;
-  final List<Payment> payments;
-
-  int get pending => total - paid;
-
-  double get progress => total == 0 ? 0 : paid / total;
-
-  int get progressPercent => (progress * 100).round();
-}
-
-/// Listado mock que alimenta las pantallas de créditos y abonos.
-const List<Credit> mockCredits = [
-  Credit(
-    code: 'CRD-2025-001',
-    status: CreditStatus.alDia,
-    dueDate: '30 sep. 2025',
-    startDate: '1 abr. 2025',
-    total: 4500000,
-    paid: 2100000,
-    monthlyFee: 350000,
-    payments: [
-      Payment(amount: 350000, date: '1 ago. 2025', method: 'Transferencia'),
-      Payment(amount: 350000, date: '1 jul. 2025', method: 'Transferencia'),
-      Payment(amount: 200000, date: '3 jun. 2025', method: 'Efectivo'),
-      Payment(amount: 150000, date: '1 jun. 2025', method: 'Transferencia'),
-    ],
-  ),
-  Credit(
-    code: 'CRD-2025-002',
-    status: CreditStatus.vencido,
-    dueDate: '15 ago. 2025',
-    startDate: '15 feb. 2025',
-    total: 1800000,
-    paid: 1800000,
-    monthlyFee: 300000,
-    payments: [
-      Payment(amount: 300000, date: '15 jul. 2025', method: 'Nequi'),
-      Payment(amount: 300000, date: '15 jun. 2025', method: 'Nequi'),
-    ],
-  ),
-];
-
-/// Métodos de pago disponibles al registrar un abono.
-const List<String> paymentMethods = [
-  'Transferencia',
-  'Efectivo',
-  'Nequi',
-  'Daviplata',
-];
-
-// ====================================================================
-// Features/deliveries/data/mock_deliveries.dart
-// ====================================================================
-
-/// Estado de una entrega.
-enum DeliveryStatus { entregado, programado, cancelado }
-
-extension DeliveryStatusView on DeliveryStatus {
-  String get label => switch (this) {
-        DeliveryStatus.entregado => 'Entregado',
-        DeliveryStatus.programado => 'Programado',
-        DeliveryStatus.cancelado => 'Cancelado',
-      };
-
-  StatusTone get tone => switch (this) {
-        DeliveryStatus.entregado => StatusTone.success,
-        DeliveryStatus.programado => StatusTone.warning,
-        DeliveryStatus.cancelado => StatusTone.danger,
-      };
-}
-
-/// Entrega de ejemplo (sin backend).
-class Delivery {
-  const Delivery({
-    required this.code,
-    required this.address,
-    required this.scheduledDate,
-    required this.status,
-    required this.quoteCode,
-    this.deliveredDate,
-  });
-
-  final String code;
-  final String address;
-  final String scheduledDate;
-  final DeliveryStatus status;
-  final String quoteCode;
-  final String? deliveredDate;
-}
-
-/// Listado mock que alimenta las pantallas de entregas.
-const List<Delivery> mockDeliveries = [
-  Delivery(
-    code: 'ENT-001',
-    address: 'Cra. 45 #80-23, Medellín',
-    scheduledDate: '18 jul. 2025',
-    deliveredDate: '18 jul. 2025',
-    status: DeliveryStatus.entregado,
-    quoteCode: 'COT-2025-001',
-  ),
-  Delivery(
-    code: 'ENT-002',
-    address: 'Cl. 10 #5-67, El Poblado',
-    scheduledDate: '28 ago. 2025',
-    status: DeliveryStatus.programado,
-    quoteCode: 'COT-2025-002',
-  ),
-  Delivery(
-    code: 'ENT-003',
-    address: 'Av. El Dorado #68C-61, Bogotá',
-    scheduledDate: '10 ago. 2025',
-    status: DeliveryStatus.cancelado,
-    quoteCode: 'COT-2025-003',
-  ),
-];
-
-// ====================================================================
-// core/routes/app_routes.dart
-// ====================================================================
-
-/// Rutas de la app. Toda la navegacion pasa por [onGenerateRoute].
-class AppRoutes {
-  const AppRoutes._();
-
-  static const String splash = '/';
-  static const String login = '/login';
-  static const String forgotPassword = '/recuperar-contrasena';
-  static const String userDashboard = '/dashboard/usuario';
-  static const String adminDashboard = '/dashboard/administrador';
-  static const String profile = '/perfil';
-  static const String editProfile = '/perfil/editar';
-  static const String quotes = '/cotizaciones';
-  static const String quoteDetail = '/cotizaciones/detalle';
-  static const String newQuote = '/cotizaciones/nueva';
-  static const String credits = '/creditos';
-  static const String creditDetail = '/creditos/detalle';
-  static const String newPayment = '/abonos/nuevo';
-  static const String paymentsHistory = '/abonos';
-  static const String deliveries = '/entregas';
-  static const String deliveryDetail = '/entregas/detalle';
-
-
-  /// Ruta del dashboard que corresponde a cada rol.
-  static String dashboardFor(UserRole role) =>
-      role == UserRole.administrador ? adminDashboard : userDashboard;
-
-  static Route<dynamic> onGenerateRoute(RouteSettings settings) {
-    switch (settings.name) {
-      case splash:
-        return _page(const SplashPage(), settings);
-      case login:
-        return _page(const LoginPage(), settings);
-      case forgotPassword:
-        return _page(const ForgotPasswordPage(), settings);
-      case userDashboard:
-        return _page(const UserDashboardPage(), settings);
-      case adminDashboard:
-        return _page(const AdminDashboardPage(), settings);
-      case profile:
-        final role = settings.arguments is UserRole
-            ? settings.arguments! as UserRole
-            : UserRole.usuario;
-        return _page(ProfilePage(role: role), settings);
-      case editProfile:
-        final role = settings.arguments is UserRole
-            ? settings.arguments! as UserRole
-            : UserRole.usuario;
-        return _page(EditProfilePage(role: role), settings);
-      case quotes:
-        return _page(const QuotesListPage(), settings);
-      case newQuote:
-        return _page(const NewQuotePage(), settings);
-      case quoteDetail:
-        final quote = settings.arguments is Quote
-            ? settings.arguments! as Quote
-            : mockQuotes.first;
-        return _page(QuoteDetailPage(quote: quote), settings);
-      case credits:
-        return _page(const CreditsListPage(), settings);
-      case creditDetail:
-        final credit = settings.arguments is Credit
-            ? settings.arguments! as Credit
-            : mockCredits.first;
-        return _page(CreditDetailPage(credit: credit), settings);
-      case newPayment:
-        return _page(
-          NewPaymentPage(credit: settings.arguments as Credit?),
-          settings,
-        );
-      case paymentsHistory:
-        return _page(
-          PaymentsHistoryPage(credit: settings.arguments as Credit?),
-          settings,
-        );
-      case deliveries:
-        return _page(const DeliveriesListPage(), settings);
-      case deliveryDetail:
-        final delivery = settings.arguments is Delivery
-            ? settings.arguments! as Delivery
-            : mockDeliveries.first;
-        return _page(DeliveryDetailPage(delivery: delivery), settings);
-      default:
-
-        return _page(_UnknownRoutePage(name: settings.name), settings);
-    }
-  }
-
-  static MaterialPageRoute<dynamic> _page(Widget child, RouteSettings s) {
-    return MaterialPageRoute<dynamic>(builder: (_) => child, settings: s);
+  String get iniciales {
+    final partes = nombre.split(' ').where((p) => p.isNotEmpty).toList();
+    if (partes.isEmpty) return '';
+    if (partes.length == 1) return partes.first.substring(0, 1).toUpperCase();
+    return (partes[0].substring(0, 1) + partes[1].substring(0, 1))
+        .toUpperCase();
   }
 }
 
-class _UnknownRoutePage extends StatelessWidget {
-  const _UnknownRoutePage({this.name});
+/// Láminas del carrusel de Inicio.
+class SlideCarrusel {
+  const SlideCarrusel({
+    required this.asset,
+    required this.titulo,
+    required this.subtitulo,
+  });
 
-  final String? name;
+  final String asset;
+  final String titulo;
+  final String subtitulo;
+}
+
+const List<SlideCarrusel> mockCarrusel = [
+  SlideCarrusel(
+    asset: 'assets/images/carrusel_llantas.png',
+    titulo: 'Llantas nuevas',
+    subtitulo: 'Michelin · Bridgestone · Pirelli',
+  ),
+  SlideCarrusel(
+    asset: 'assets/images/carrusel_maquinaria.png',
+    titulo: 'Maquinaria pesada',
+    subtitulo: 'Minería, carga y construcción',
+  ),
+  SlideCarrusel(
+    asset: 'assets/images/carrusel_inventario.png',
+    titulo: 'Inventario disponible',
+    subtitulo: 'Entrega inmediata en bodega',
+  ),
+];
+
+// ====================================================================
+// 5. Pantallas
+// ====================================================================
+
+/// Splash con el logo de MiraLlantas.
+class SplashScreen extends StatefulWidget {
+  const SplashScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Pantalla no encontrada')),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(
-            'No existe una pantalla para la ruta "${name ?? ''}".',
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodyLarge,
-          ),
-        ),
-      ),
-    );
-  }
+  State<SplashScreen> createState() => _SplashScreenState();
 }
 
-// ====================================================================
-// Features/splash/presentation/pages/splash_page.dart
-// ====================================================================
-
-/// Pantalla de carga inicial. Simula un arranque y pasa al login.
-class SplashPage extends StatefulWidget {
-  const SplashPage({super.key});
-
-  @override
-  State<SplashPage> createState() => _SplashPageState();
-}
-
-class _SplashPageState extends State<SplashPage>
+class _SplashScreenState extends State<SplashScreen>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
+  late final AnimationController _c = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 900),
+    duration: const Duration(milliseconds: 1100),
   )..forward();
 
   Timer? _timer;
@@ -1940,7 +1240,7 @@ class _SplashPageState extends State<SplashPage>
   @override
   void initState() {
     super.initState();
-    _timer = Timer(const Duration(milliseconds: 2200), () {
+    _timer = Timer(const Duration(milliseconds: 2400), () {
       if (!mounted) return;
       Navigator.of(context).pushReplacementNamed(AppRoutes.login);
     });
@@ -1949,7 +1249,7 @@ class _SplashPageState extends State<SplashPage>
   @override
   void dispose() {
     _timer?.cancel();
-    _controller.dispose();
+    _c.dispose();
     super.dispose();
   }
 
@@ -1957,33 +1257,53 @@ class _SplashPageState extends State<SplashPage>
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final palette = context.palette;
+    final fade = CurvedAnimation(parent: _c, curve: Curves.easeOut);
+    final scale = Tween<double>(begin: 0.82, end: 1).animate(
+      CurvedAnimation(parent: _c, curve: Curves.easeOutBack),
+    );
 
     return Scaffold(
-      backgroundColor: palette.background,
+      backgroundColor: AppColors.accent,
       body: Center(
         child: FadeTransition(
-          opacity: CurvedAnimation(parent: _controller, curve: Curves.easeOut),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const MiraLogo(size: 104),
-              const SizedBox(height: 24),
-              Text('MiraLlantas', style: theme.textTheme.headlineLarge),
-              const SizedBox(height: 8),
-              Text(
-                'Gestión de llantas y reencauche',
-                style: theme.textTheme.bodyMedium,
-              ),
-              const SizedBox(height: 40),
-              const SizedBox(
-                width: 28,
-                height: 28,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2.6,
-                  color: AppColors.accent,
+          opacity: fade,
+          child: ScaleTransition(
+            scale: scale,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Image.asset(
+                  'assets/images/logo.png',
+                  width: 180,
+                  height: 180,
+                  fit: BoxFit.contain,
                 ),
-              ),
-            ],
+                const SizedBox(height: 18),
+                Text(
+                  'MiraLlantas',
+                  style: theme.textTheme.headlineLarge?.copyWith(
+                    color: AppColors.onAccent,
+                    fontSize: 34,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Gestión de llantas y reencauche',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: AppColors.onAccent.withAlpha(180),
+                  ),
+                ),
+                const SizedBox(height: 36),
+                SizedBox(
+                  width: 26,
+                  height: 26,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.6,
+                    color: palette.header,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -1991,37 +1311,57 @@ class _SplashPageState extends State<SplashPage>
   }
 }
 
-// ====================================================================
-// Features/Auth/presentation/pages/login_page.dart
-// ====================================================================
+/// Logo pequeño en tarjeta redondeada para el login.
+class LogoMira extends StatelessWidget {
+  const LogoMira({super.key, this.size = 84});
 
-/// Login de MiraLlantas. Solo UI: no valida credenciales, unicamente
-/// navega al dashboard del rol seleccionado.
-class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
+  final double size;
 
   @override
-  State<LoginPage> createState() => _LoginPageState();
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(size * 0.28),
+        boxShadow: [
+          BoxShadow(
+            color: palette.shadow,
+            blurRadius: 16,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      // El logo ya trae su propio fondo amarillo: solo se redondea.
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(size * 0.28),
+        child: Image.asset('assets/images/logo.png', fit: BoxFit.cover),
+      ),
+    );
+  }
 }
 
-class _LoginPageState extends State<LoginPage> {
-  final TextEditingController _email = TextEditingController();
-  final TextEditingController _password = TextEditingController();
-  UserRole _role = UserRole.usuario;
+/// Login. Sin selector de rol: la app es solo para el cliente.
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final TextEditingController _correo = TextEditingController();
+  final TextEditingController _clave = TextEditingController();
 
   @override
   void dispose() {
-    _email.dispose();
-    _password.dispose();
+    _correo.dispose();
+    _clave.dispose();
     super.dispose();
   }
 
-  void _signIn() {
-    Navigator.of(context).pushReplacementNamed(
-      AppRoutes.dashboardFor(_role),
-      arguments: _role,
-    );
-  }
+  void _entrar() => Navigator.of(context).pushReplacementNamed(AppRoutes.home);
 
   @override
   Widget build(BuildContext context) {
@@ -2031,92 +1371,161 @@ class _LoginPageState extends State<LoginPage> {
     return Scaffold(
       backgroundColor: palette.background,
       body: SafeArea(
-        child: Stack(
-          children: [
-            Align(
-              alignment: Alignment.topRight,
-              child: Padding(
-                padding: const EdgeInsets.all(8),
-                child: IconButton(
-                  tooltip: 'Cambiar tema',
-                  onPressed: ThemeController.instance.toggle,
-                  icon: Icon(
-                    palette.isDark
-                        ? Icons.light_mode_outlined
-                        : Icons.dark_mode_outlined,
-                    color: palette.textSecondary,
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 32, 24, 32),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Center(child: LogoMira()),
+                  const SizedBox(height: 20),
+                  Center(
+                    child: Text(
+                      'MiraLlantas',
+                      style: theme.textTheme.headlineLarge,
+                    ),
                   ),
-                ),
+                  const SizedBox(height: 6),
+                  Center(
+                    child: Text(
+                      'Gestión de llantas y reencauche',
+                      style: theme.textTheme.bodyMedium,
+                    ),
+                  ),
+                  const SizedBox(height: 30),
+                  CampoTexto(
+                    label: 'Correo electrónico',
+                    hint: 'correo@ejemplo.com',
+                    controller: _correo,
+                    prefixIcon: Icons.mail_outline,
+                    keyboardType: TextInputType.emailAddress,
+                    textInputAction: TextInputAction.next,
+                  ),
+                  const SizedBox(height: 18),
+                  CampoTexto(
+                    label: 'Contraseña',
+                    hint: '••••••••',
+                    controller: _clave,
+                    obscure: true,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) => _entrar(),
+                  ),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () => Navigator.of(context)
+                          .pushNamed(AppRoutes.recuperar),
+                      child: const Text(
+                        '¿Olvidaste tu contraseña?',
+                        style: TextStyle(
+                          decoration: TextDecoration.underline,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  ElevatedButton(
+                    onPressed: _entrar,
+                    child: const Text('Iniciar sesión'),
+                  ),
+                  const SizedBox(height: 26),
+                  const Center(child: SelectorTema()),
+                ],
               ),
             ),
-            Center(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 32, 20, 32),
-                child: Container(
-                  constraints: const BoxConstraints(maxWidth: 460),
-                  padding: const EdgeInsets.fromLTRB(24, 32, 24, 28),
-                  decoration: BoxDecoration(
-                    color: palette.surface,
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: palette.border),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Píldora "Claro / Oscuro" del login.
+class SelectorTema extends StatelessWidget {
+  const SelectorTema({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: palette.surfaceAlt,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: palette.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _OpcionTema(
+            label: 'Claro',
+            icon: Icons.light_mode_outlined,
+            selected: !palette.isDark,
+            onTap: () => ThemeController.instance.set(false),
+          ),
+          _OpcionTema(
+            label: 'Oscuro',
+            icon: Icons.dark_mode_outlined,
+            selected: palette.isDark,
+            onTap: () => ThemeController.instance.set(true),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OpcionTema extends StatelessWidget {
+  const _OpcionTema({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    final fg = selected ? palette.textPrimary : palette.textSecondary;
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(20),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 260),
+        curve: Curves.easeOut,
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
+        decoration: BoxDecoration(
+          color: selected ? palette.surface : Colors.transparent,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: selected
+              ? [
+                  BoxShadow(
+                    color: palette.shadow,
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      const Center(child: MiraLogo()),
-                      const SizedBox(height: 20),
-                      Center(
-                        child: Text(
-                          'MiraLlantas',
-                          style: theme.textTheme.headlineLarge,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Center(
-                        child: Text(
-                          'Gestión de llantas y reencauche',
-                          style: theme.textTheme.bodyMedium,
-                        ),
-                      ),
-                      const SizedBox(height: 28),
-                      CustomTextField(
-                        label: 'Correo electrónico',
-                        hint: 'correo@ejemplo.com',
-                        controller: _email,
-                        prefixIcon: Icons.mail_outline,
-                        keyboardType: TextInputType.emailAddress,
-                        textInputAction: TextInputAction.next,
-                      ),
-                      const SizedBox(height: 18),
-                      CustomTextField(
-                        label: 'Contraseña',
-                        hint: '........',
-                        controller: _password,
-                        obscure: true,
-                        textInputAction: TextInputAction.done,
-                        onSubmitted: (_) => _signIn(),
-                      ),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: TextButton(
-                          onPressed: () => Navigator.of(context)
-                              .pushNamed(AppRoutes.forgotPassword),
-                          child: const Text('¿Olvidaste tu contraseña?'),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      RoleSelector(
-                        value: _role,
-                        onChanged: (role) => setState(() => _role = role),
-                      ),
-                      const SizedBox(height: 24),
-                      CustomButton(
-                        label: 'Iniciar sesión',
-                        onPressed: _signIn,
-                      ),
-                    ],
-                  ),
-                ),
+                ]
+              : null,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: fg),
+            const SizedBox(width: 7),
+            Text(
+              label,
+              style: TextStyle(
+                color: fg,
+                fontSize: 14,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
               ),
             ),
           ],
@@ -2126,338 +1535,46 @@ class _LoginPageState extends State<LoginPage> {
   }
 }
 
-// ====================================================================
-// Features/Auth/presentation/pages/forgot_password_page.dart
-// ====================================================================
-
-/// Recuperación de contraseña. Solo UI: muestra un mensaje simulado.
-class ForgotPasswordPage extends StatefulWidget {
-  const ForgotPasswordPage({super.key});
+/// Recuperar contraseña en tres pasos: correo, código y nueva clave.
+class RecuperarScreen extends StatefulWidget {
+  const RecuperarScreen({super.key});
 
   @override
-  State<ForgotPasswordPage> createState() => _ForgotPasswordPageState();
+  State<RecuperarScreen> createState() => _RecuperarScreenState();
 }
 
-class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
-  final TextEditingController _email = TextEditingController();
-  bool _sent = false;
+class _RecuperarScreenState extends State<RecuperarScreen> {
+  int _paso = 0;
+
+  final TextEditingController _correo = TextEditingController();
+  final List<TextEditingController> _digitos =
+      List.generate(6, (_) => TextEditingController());
+  final TextEditingController _nueva = TextEditingController();
+  final TextEditingController _confirmar = TextEditingController();
 
   @override
   void dispose() {
-    _email.dispose();
+    _correo.dispose();
+    for (final d in _digitos) {
+      d.dispose();
+    }
+    _nueva.dispose();
+    _confirmar.dispose();
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final palette = context.palette;
-
-    return Scaffold(
-      backgroundColor: palette.background,
-      appBar: AppBar(title: const Text('Recuperar contraseña')),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(20, 32, 20, 32),
-          child: Center(
-            child: Container(
-              constraints: const BoxConstraints(maxWidth: 460),
-              padding: const EdgeInsets.fromLTRB(24, 32, 24, 28),
-              decoration: BoxDecoration(
-                color: palette.surface,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: palette.border),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Center(child: MiraLogo(size: 68)),
-                  const SizedBox(height: 20),
-                  Center(
-                    child: Text(
-                      'Recuperar acceso',
-                      style: theme.textTheme.titleLarge,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Escribe el correo con el que te registraste y te '
-                    'enviaremos las instrucciones para crear una nueva '
-                    'contraseña.',
-                    textAlign: TextAlign.center,
-                    style: theme.textTheme.bodyMedium,
-                  ),
-                  const SizedBox(height: 24),
-                  CustomTextField(
-                    label: 'Correo electrónico',
-                    hint: 'correo@ejemplo.com',
-                    controller: _email,
-                    prefixIcon: Icons.mail_outline,
-                    keyboardType: TextInputType.emailAddress,
-                  ),
-                  const SizedBox(height: 24),
-                  CustomButton(
-                    label: 'Enviar instrucciones',
-                    onPressed: () => setState(() => _sent = true),
-                  ),
-                  if (_sent) ...[
-                    const SizedBox(height: 16),
-                    Text(
-                      'Listo. Si el correo existe, recibirás un enlace en '
-                      'unos minutos.',
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  ],
-                  const SizedBox(height: 8),
-                  CustomButton.outlined(
-                    label: 'Volver al inicio de sesión',
-                    onPressed: () => Navigator.of(context).pop(),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ====================================================================
-// Features/dashboard/presentation/pages/user_dashboard_page.dart
-// ====================================================================
-
-/// Dashboard del cliente. Todos los datos son mock: no hay backend.
-class UserDashboardPage extends StatefulWidget {
-  const UserDashboardPage({super.key});
-
-  @override
-  State<UserDashboardPage> createState() => _UserDashboardPageState();
-}
-
-class _UserDashboardPageState extends State<UserDashboardPage> {
-  // Datos de ejemplo del cliente.
-  static const String _name = 'Carlos Ramírez';
-  static const int _available = 2400000;
-  static const int _used = 2100000;
-  static const int _total = 4500000;
-
-  void _open(String route, {Object? arguments}) {
-    Navigator.of(context).pushNamed(route, arguments: arguments);
-  }
-
-  void _openProfile() => _open(AppRoutes.profile, arguments: UserRole.usuario);
-
-  void _logout() {
-    Navigator.of(context)
-        .pushNamedAndRemoveUntil(AppRoutes.login, (route) => false);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final palette = context.palette;
-
-    final modules = <ModuleItem>[
-      ModuleItem(
-        label: 'Cotizaciones',
-        icon: Icons.description_outlined,
-        onTap: () => _open(AppRoutes.quotes),
-      ),
-      ModuleItem(
-        label: 'Créditos',
-        icon: Icons.credit_card_outlined,
-        onTap: () => _open(AppRoutes.credits),
-      ),
-      ModuleItem(
-        label: 'Abonos',
-        icon: Icons.account_balance_wallet_outlined,
-        onTap: () => _open(AppRoutes.paymentsHistory),
-      ),
-      ModuleItem(
-        label: 'Entregas',
-        icon: Icons.local_shipping_outlined,
-        onTap: () => _open(AppRoutes.deliveries),
-      ),
-      ModuleItem(
-        label: 'Mi Perfil',
-        icon: Icons.person_outline,
-        onTap: _openProfile,
-      ),
-      ModuleItem(
-        label: 'Cerrar sesión',
-        icon: Icons.logout,
-        standout: true,
-        onTap: _logout,
-      ),
-    ];
-
-    return Scaffold(
-      backgroundColor: palette.background,
-      body: Column(
-        children: [
-          const DashboardHeader(name: _name),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-              children: [
-                const CreditBalanceCard(
-                  available: _available,
-                  used: _used,
-                  total: _total,
-                ),
-                const SizedBox(height: 24),
-                Text('MÓDULOS', style: theme.textTheme.labelSmall),
-                const SizedBox(height: 12),
-                GridView.count(
-                  crossAxisCount: 2,
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  mainAxisSpacing: 14,
-                  crossAxisSpacing: 14,
-                  childAspectRatio: 1.25,
-                  children: [
-                    for (final module in modules) ModuleCard(item: module),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-      bottomNavigationBar: const MiraTabBar(),
-    );
-  }
-}
-
-// ====================================================================
-// Features/dashboard/presentation/pages/admin_dashboard_page.dart
-// ====================================================================
-
-/// Dashboard del administrador. Misma estructura visual que el del
-/// cliente, con resumen operativo en lugar del saldo. Datos mock.
-class AdminDashboardPage extends StatefulWidget {
-  const AdminDashboardPage({super.key});
-
-  @override
-  State<AdminDashboardPage> createState() => _AdminDashboardPageState();
-}
-
-class _AdminDashboardPageState extends State<AdminDashboardPage> {
-  static const String _name = 'Laura González';
-
-  static const List<SummaryStat> _stats = [
-    SummaryStat(value: '5', label: 'Pedidos pendientes'),
-    SummaryStat(value: '3', label: 'Entregas hoy'),
-    SummaryStat(value: '2', label: 'Créditos por vencer', highlight: true),
-    SummaryStat(value: '1', label: 'Nuevos clientes'),
-  ];
-
-  void _openModule(String label) {
+  void _avanzar() {
+    if (_paso < 2) {
+      setState(() => _paso++);
+      return;
+    }
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        SnackBar(content: Text('Módulo "$label" en construcción')),
+        const SnackBar(content: Text('Contraseña actualizada (demo)')),
       );
+    Navigator.of(context).pop();
   }
-
-  void _open(String route, {Object? arguments}) {
-    Navigator.of(context).pushNamed(route, arguments: arguments);
-  }
-
-  void _openProfile() => _open(AppRoutes.profile, arguments: UserRole.administrador);
-
-  void _logout() {
-    Navigator.of(context)
-        .pushNamedAndRemoveUntil(AppRoutes.login, (route) => false);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final palette = context.palette;
-
-    final modules = <ModuleItem>[
-      ModuleItem(
-        label: 'Cotizaciones',
-        icon: Icons.description_outlined,
-        onTap: () => _open(AppRoutes.quotes),
-      ),
-      ModuleItem(
-        label: 'Créditos',
-        icon: Icons.credit_card_outlined,
-        onTap: () => _open(AppRoutes.credits),
-      ),
-      ModuleItem(
-        label: 'Abonos',
-        icon: Icons.account_balance_wallet_outlined,
-        onTap: () => _open(AppRoutes.paymentsHistory),
-      ),
-      ModuleItem(
-        label: 'Entregas',
-        icon: Icons.local_shipping_outlined,
-        onTap: () => _open(AppRoutes.deliveries),
-      ),
-      ModuleItem(
-        label: 'Reencauches',
-        icon: Icons.autorenew,
-        onTap: () => _openModule('Reencauches'),
-      ),
-      ModuleItem(
-        label: 'Mi Perfil',
-        icon: Icons.person_outline,
-        onTap: _openProfile,
-      ),
-      ModuleItem(
-        label: 'Cerrar sesión',
-        icon: Icons.logout,
-        standout: true,
-        onTap: _logout,
-      ),
-    ];
-
-    return Scaffold(
-      backgroundColor: palette.background,
-      body: Column(
-        children: [
-          const DashboardHeader(name: _name, roleLabel: 'ADMINISTRADOR'),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-              children: [
-                const AdminSummaryCard(stats: _stats),
-                const SizedBox(height: 24),
-                Text('MÓDULOS', style: theme.textTheme.labelSmall),
-                const SizedBox(height: 12),
-                GridView.count(
-                  crossAxisCount: 2,
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  mainAxisSpacing: 14,
-                  crossAxisSpacing: 14,
-                  childAspectRatio: 1.25,
-                  children: [
-                    for (final module in modules) ModuleCard(item: module),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-      bottomNavigationBar: const MiraTabBar(),
-    );
-  }
-}
-
-// ====================================================================
-// Features/quotes/presentation/pages/quotes_list_page.dart
-// ====================================================================
-
-/// Listado de cotizaciones. Datos mock, sin backend.
-class QuotesListPage extends StatelessWidget {
-  const QuotesListPage({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -2468,297 +1585,739 @@ class QuotesListPage extends StatelessWidget {
       backgroundColor: palette.background,
       body: Column(
         children: [
-          const MiraHeader(title: 'Cotizaciones'),
+          const MiraHeader(title: 'Recuperar contraseña'),
           Expanded(
             child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
               children: [
                 Row(
                   children: [
-                    Expanded(
-                      child: Text(
-                        '${mockQuotes.length} COTIZACIONES',
-                        style: theme.textTheme.labelSmall,
+                    for (var i = 0; i < 3; i++) ...[
+                      if (i > 0) const SizedBox(width: 8),
+                      Expanded(
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 300),
+                          height: 3,
+                          decoration: BoxDecoration(
+                            color: i <= _paso
+                                ? palette.header
+                                : palette.border,
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        ),
                       ),
-                    ),
-                    ElevatedButton.icon(
-                      onPressed: () => Navigator.of(context)
-                          .pushNamed(AppRoutes.newQuote),
-                      icon: const Icon(Icons.add, size: 20),
-                      label: const Text('Nueva'),
-                      style: ElevatedButton.styleFrom(
-                        minimumSize: const Size(0, 44),
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 18),
-                      ),
-                    ),
+                    ],
                   ],
                 ),
-                const SizedBox(height: 14),
-                for (final quote in mockQuotes) ...[
-                  _QuoteCard(quote: quote),
-                  const SizedBox(height: 12),
+                const SizedBox(height: 26),
+                if (_paso == 0) ...[
+                  Text('Ingresa tu correo',
+                      style: theme.textTheme.headlineLarge
+                          ?.copyWith(fontSize: 24)),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Te enviaremos un código de verificación de 6 dígitos.',
+                    style: theme.textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 22),
+                  CampoTexto(
+                    label: 'Correo electrónico',
+                    hint: 'correo@ejemplo.com',
+                    controller: _correo,
+                    keyboardType: TextInputType.emailAddress,
+                  ),
+                  const SizedBox(height: 24),
+                  ElevatedButton(
+                    onPressed: _avanzar,
+                    child: const Text('Enviar código'),
+                  ),
+                ] else if (_paso == 1) ...[
+                  Text('Código de verificación',
+                      style: theme.textTheme.headlineLarge
+                          ?.copyWith(fontSize: 24)),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Revisa tu correo e ingresa el código de 6 dígitos.',
+                    style: theme.textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 22),
+                  Row(
+                    children: [
+                      for (var i = 0; i < 6; i++) ...[
+                        if (i > 0) const SizedBox(width: 8),
+                        Expanded(
+                          child: SizedBox(
+                            height: 56,
+                            child: TextField(
+                              controller: _digitos[i],
+                              textAlign: TextAlign.center,
+                              keyboardType: TextInputType.number,
+                              maxLength: 1,
+                              style: theme.textTheme.titleLarge,
+                              decoration: const InputDecoration(
+                                counterText: '',
+                                contentPadding: EdgeInsets.zero,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 22),
+                  ElevatedButton(
+                    onPressed: _avanzar,
+                    child: const Text('Verificar código'),
+                  ),
+                  const SizedBox(height: 8),
+                  Center(
+                    child: TextButton(
+                      onPressed: () {},
+                      child: const Text('¿No recibiste el código? Reenviar'),
+                    ),
+                  ),
+                ] else ...[
+                  Text('Nueva contraseña',
+                      style: theme.textTheme.headlineLarge
+                          ?.copyWith(fontSize: 24)),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Elige una contraseña segura de al menos 6 caracteres.',
+                    style: theme.textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 22),
+                  CampoTexto(
+                    label: 'Nueva contraseña',
+                    hint: '••••••••',
+                    controller: _nueva,
+                    obscure: true,
+                  ),
+                  const SizedBox(height: 16),
+                  CampoTexto(
+                    label: 'Confirmar contraseña',
+                    hint: '••••••••',
+                    controller: _confirmar,
+                    obscure: true,
+                  ),
+                  const SizedBox(height: 24),
+                  ElevatedButton(
+                    onPressed: _avanzar,
+                    child: const Text('Actualizar contraseña'),
+                  ),
                 ],
               ],
             ),
           ),
         ],
       ),
-      bottomNavigationBar: const MiraTabBar(),
     );
   }
 }
 
-class _QuoteCard extends StatelessWidget {
-  const _QuoteCard({required this.quote});
-
-  final Quote quote;
+/// Contenedor principal: cinco pestañas, cada una con su propio
+/// Navigator para que la barra inferior no se pierda al entrar a un
+/// detalle.
+class MainShell extends StatefulWidget {
+  const MainShell({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final palette = context.palette;
-
-    return Material(
-      color: palette.surface,
-      borderRadius: BorderRadius.circular(16),
-      child: InkWell(
-        onTap: () => Navigator.of(context)
-            .pushNamed(AppRoutes.quoteDetail, arguments: quote),
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: palette.border),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(quote.code, style: theme.textTheme.titleMedium),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${quote.date} · ${quote.client}',
-                      style: theme.textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '${quote.items.length} ${quote.items.length == 1 ? "ítem" : "ítems"}'
-                      ' · ${quote.paymentMethod} · ${quote.productType}',
-                      style: theme.textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 10),
-                    StatusChip(
-                      label: quote.status.label,
-                      tone: quote.status.tone,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 12),
-              Text(
-                formatCop(quote.total),
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontSize: 17,
-                  color: palette.isDark
-                      ? palette.textPrimary
-                      : AppColors.onAccent,
-                ),
-              ),
-              Icon(Icons.chevron_right, color: palette.textMuted),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  State<MainShell> createState() => _MainShellState();
 }
 
-// ====================================================================
-// Features/quotes/presentation/pages/quote_detail_page.dart
-// ====================================================================
+class _MainShellState extends State<MainShell> {
+  MiraTab _tab = MiraTab.inicio;
 
-/// Detalle de una cotización con sus ítems y el total.
-class QuoteDetailPage extends StatelessWidget {
-  const QuoteDetailPage({super.key, required this.quote});
+  final Map<MiraTab, GlobalKey<NavigatorState>> _keys = {
+    for (final t in MiraTab.values) t: GlobalKey<NavigatorState>(),
+  };
 
-  final Quote quote;
+  void _select(MiraTab tab) {
+    if (tab == _tab) {
+      // Volver a tocar la pestaña activa regresa a su pantalla raíz.
+      _keys[tab]!.currentState?.popUntil((r) => r.isFirst);
+      return;
+    }
+    setState(() => _tab = tab);
+  }
+
+  Widget _raiz(MiraTab tab) => switch (tab) {
+        MiraTab.inicio => const InicioScreen(),
+        MiraTab.cotizaciones => const CotizacionesScreen(),
+        MiraTab.cartera => const CarteraScreen(),
+        MiraTab.entregas => const EntregasScreen(),
+        MiraTab.perfil => const PerfilScreen(),
+      };
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final palette = context.palette;
 
     return Scaffold(
       backgroundColor: palette.background,
-      body: Column(
-        children: [
-          MiraHeader(title: quote.code),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: palette.surface,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: palette.border),
-                  ),
-                  child: Column(
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              quote.date,
-                              style: theme.textTheme.bodyMedium,
-                            ),
-                          ),
-                          StatusChip(
-                            label: quote.status.label,
-                            tone: quote.status.tone,
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 14),
-                      _InfoRow(label: 'Cliente', value: quote.client),
-                      _InfoRow(label: 'Tipo', value: quote.productType),
-                      _InfoRow(label: 'Pago', value: quote.paymentMethod),
-                    ],
-                  ),
+      body: PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (didPop) return;
+          final nav = _keys[_tab]!.currentState;
+          if (nav != null && nav.canPop()) {
+            nav.pop();
+          } else if (_tab != MiraTab.inicio) {
+            setState(() => _tab = MiraTab.inicio);
+          }
+        },
+        child: IndexedStack(
+          index: _tab.index,
+          children: [
+            for (final tab in MiraTab.values)
+              Navigator(
+                key: _keys[tab],
+                onGenerateRoute: (settings) => MaterialPageRoute<void>(
+                  builder: (_) => _raiz(tab),
+                  settings: settings,
                 ),
-                const SizedBox(height: 24),
-                Text('ÍTEMS DE LA COTIZACIÓN',
-                    style: theme.textTheme.labelSmall),
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: palette.surface,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: palette.border),
-                  ),
-                  child: Column(
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            flex: 4,
-                            child: Text('DESCRIPCIÓN',
-                                style: theme.textTheme.labelSmall),
-                          ),
-                          Expanded(
-                            child: Text(
-                              'CANT.',
-                              textAlign: TextAlign.right,
-                              style: theme.textTheme.labelSmall,
+              ),
+          ],
+        ),
+      ),
+      bottomNavigationBar: MiraNavBar(current: _tab, onSelected: _select),
+    );
+  }
+}
+
+/// Pantalla de Inicio: resumen de cartera, accesos y carrusel.
+class InicioScreen extends StatelessWidget {
+  const InicioScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final palette = context.palette;
+    final store = CarteraStore.instance;
+
+    return Column(
+      children: [
+        MiraHeader(
+          title: PerfilUsuario.instance.nombre,
+          subtitle: 'Bienvenido de nuevo,',
+          showBack: false,
+        ),
+        Expanded(
+          child: AnimatedBuilder(
+            animation: store,
+            builder: (context, _) {
+              final proximo = store.proximoPago;
+              return ListView(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+                children: [
+                  MiraCard(
+                    highlight: true,
+                    padding: const EdgeInsets.all(18),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('Saldo de Cartera disponible',
+                                      style: theme.textTheme.bodyMedium),
+                                  const SizedBox(height: 6),
+                                  Text(formatCop(store.disponible),
+                                      style: theme.textTheme.headlineLarge),
+                                ],
+                              ),
                             ),
-                          ),
-                          Expanded(
-                            flex: 2,
-                            child: Text(
-                              'SUBTOTAL',
-                              textAlign: TextAlign.right,
-                              style: theme.textTheme.labelSmall,
+                            Container(
+                              padding: const EdgeInsets.all(9),
+                              decoration: BoxDecoration(
+                                color: palette.accentSoft,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: const Icon(
+                                Icons.credit_card,
+                                color: AppColors.accentDark,
+                                size: 22,
+                              ),
                             ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text('Usado: ${formatCop(store.usado)}',
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.bodySmall),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Cupo total: ${formatCop(store.cupoTotal)}',
+                                textAlign: TextAlign.right,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodySmall,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        BarraProgreso(value: store.porcentajeUsado / 100),
+                        const SizedBox(height: 8),
+                        Text(
+                          '${store.porcentajeUsado}% del cupo utilizado',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: AppColors.accentDark,
+                            fontWeight: FontWeight.w600,
                           ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      for (final item in quote.items) ...[
-                        Divider(height: 20, color: palette.border),
-                        _ItemRow(item: item),
+                        ),
                       ],
-                      Divider(height: 24, color: palette.border),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text('Total',
-                                style: theme.textTheme.titleMedium),
-                          ),
-                          Text(
-                            formatCop(quote.total),
-                            style: theme.textTheme.titleLarge?.copyWith(
-                              color: palette.isDark
-                                  ? AppColors.info
-                                  : palette.header,
-                            ),
-                          ),
-                        ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _MiniCard(
+                          icon: Icons.description_outlined,
+                          titulo: 'COTIZACIONES',
+                          valor: '${mockCotizaciones.length}',
+                          detalle: 'activas este mes',
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      const Expanded(
+                        child: _MiniCard(
+                          icon: Icons.local_shipping_outlined,
+                          titulo: 'ENTREGAS',
+                          valor: '1',
+                          detalle: 'pendiente de entrega',
+                        ),
                       ),
                     ],
                   ),
+                  const SizedBox(height: 14),
+                  if (proximo != null) _CardProximoPago(cartera: proximo),
+                  const SizedBox(height: 22),
+                  const CarruselInicio(),
+                ],
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _CardProximoPago extends StatelessWidget {
+  const _CardProximoPago({required this.cartera});
+
+  final Cartera cartera;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final palette = context.palette;
+    return MiraCard(
+      highlight: true,
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: palette.accentSoft,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(
+              Icons.event_available_outlined,
+              color: AppColors.accentDark,
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Próximo pago', style: theme.textTheme.bodyMedium),
+                Text(
+                  formatCop(cartera.cuotaMensual),
+                  style: theme.textTheme.headlineLarge?.copyWith(fontSize: 24),
+                ),
+                Text(
+                  'Cuota ${cartera.codigo} · vence ${cartera.vence}',
+                  style: theme.textTheme.bodySmall,
                 ),
               ],
             ),
           ),
         ],
       ),
-      bottomNavigationBar: const MiraTabBar(),
     );
   }
 }
 
-class _InfoRow extends StatelessWidget {
-  const _InfoRow({required this.label, required this.value});
+class _MiniCard extends StatelessWidget {
+  const _MiniCard({
+    required this.icon,
+    required this.titulo,
+    required this.valor,
+    required this.detalle,
+  });
 
-  final String label;
-  final String value;
+  final IconData icon;
+  final String titulo;
+  final String valor;
+  final String detalle;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 5),
-      child: Row(
+    final palette = context.palette;
+    return MiraCard(
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(child: Text(label, style: theme.textTheme.bodyMedium)),
-          Text(value, style: theme.textTheme.titleMedium),
+          Row(
+            children: [
+              Icon(icon, size: 18, color: palette.iconTileFg),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  titulo,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(valor,
+              style: theme.textTheme.headlineLarge?.copyWith(fontSize: 26)),
+          const SizedBox(height: 2),
+          Text(detalle,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall),
         ],
       ),
     );
   }
 }
 
-class _ItemRow extends StatelessWidget {
-  const _ItemRow({required this.item});
+/// Carrusel de fotos con avance automático y puntos indicadores.
+class CarruselInicio extends StatefulWidget {
+  const CarruselInicio({super.key});
 
-  final QuoteItem item;
+  @override
+  State<CarruselInicio> createState() => _CarruselInicioState();
+}
+
+class _CarruselInicioState extends State<CarruselInicio> {
+  final PageController _controller = PageController();
+  int _index = 0;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _irA(int i) {
+    _controller.animateToPage(
+      i,
+      duration: const Duration(milliseconds: 420),
+      curve: Curves.easeOutCubic,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    final palette = context.palette;
+
+    return Column(
       children: [
-        Expanded(
-          flex: 4,
-          child: Text(item.description, style: theme.textTheme.bodyLarge),
-        ),
-        Expanded(
-          child: Text(
-            '${item.quantity}',
-            textAlign: TextAlign.right,
-            style: theme.textTheme.bodyLarge,
+        SizedBox(
+          height: 170,
+          child: PageView.builder(
+            controller: _controller,
+            itemCount: mockCarrusel.length,
+            onPageChanged: (i) => setState(() => _index = i),
+            itemBuilder: (context, i) {
+              final slide = mockCarrusel[i];
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(18),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Image.asset(slide.asset, fit: BoxFit.cover),
+                      const DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.centerLeft,
+                            end: Alignment.centerRight,
+                            colors: [Color(0xE60D1520), Color(0x330D1520)],
+                          ),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.all(18),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              slide.titulo,
+                              style: theme.textTheme.titleLarge?.copyWith(
+                                color: Colors.white,
+                                fontSize: 21,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              slide.subtitulo,
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: Colors.white70,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
           ),
         ),
-        Expanded(
-          flex: 2,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                formatCop(item.unitPrice),
-                style: theme.textTheme.bodySmall,
+        const SizedBox(height: 12),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            for (var i = 0; i < mockCarrusel.length; i++)
+              GestureDetector(
+                onTap: () => _irA(i),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 280),
+                  margin: const EdgeInsets.symmetric(horizontal: 3),
+                  width: i == _index ? 20 : 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    color: i == _index ? AppColors.accent : palette.trackBg,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
               ),
-              const SizedBox(height: 2),
-              Text(
-                formatCop(item.subtotal),
-                style: theme.textTheme.titleMedium?.copyWith(fontSize: 15),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// Listado de cotizaciones (solo visualización).
+class CotizacionesScreen extends StatelessWidget {
+  const CotizacionesScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final palette = context.palette;
+
+    return Column(
+      children: [
+        const MiraHeader(title: 'Cotizaciones', showBack: false),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text('${mockCotizaciones.length} COTIZACIONES',
+                        style: theme.textTheme.labelSmall),
+                  ),
+                  ElevatedButton.icon(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const NuevaCotizacionScreen(),
+                      ),
+                    ),
+                    icon: const Icon(Icons.add, size: 20),
+                    label: const Text('Nueva'),
+                    style: ElevatedButton.styleFrom(
+                      minimumSize: const Size(0, 42),
+                      padding: const EdgeInsets.symmetric(horizontal: 18),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              for (final cot in mockCotizaciones) ...[
+                MiraCard(
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => CotizacionDetalleScreen(cotizacion: cot),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(cot.codigo,
+                                style: theme.textTheme.titleMedium),
+                            const SizedBox(height: 4),
+                            Text('${cot.fecha} · ${cot.pago} · ${cot.tipo}',
+                                style: theme.textTheme.bodySmall),
+                            const SizedBox(height: 10),
+                            EstadoChip(label: cot.estado, tono: cot.tono),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Text(formatCop(cot.total),
+                          style: theme.textTheme.titleMedium
+                              ?.copyWith(fontSize: 16)),
+                      Icon(Icons.chevron_right, color: palette.textMuted),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Detalle de una cotización con sus ítems.
+class CotizacionDetalleScreen extends StatelessWidget {
+  const CotizacionDetalleScreen({super.key, required this.cotizacion});
+
+  final Cotizacion cotizacion;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final palette = context.palette;
+
+    return Column(
+      children: [
+        MiraHeader(title: cotizacion.codigo),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+            children: [
+              MiraCard(
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(cotizacion.fecha,
+                              style: theme.textTheme.bodyMedium),
+                        ),
+                        EstadoChip(
+                          label: cotizacion.estado,
+                          tono: cotizacion.tono,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    FilaDato(label: 'Cliente', value: cotizacion.cliente),
+                    FilaDato(label: 'Tipo', value: cotizacion.tipo),
+                    FilaDato(label: 'Pago', value: cotizacion.pago),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 22),
+              Text('ÍTEMS DE LA COTIZACIÓN', style: theme.textTheme.labelSmall),
+              const SizedBox(height: 12),
+              MiraCard(
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          flex: 4,
+                          child: Text('DESCRIPCIÓN',
+                              style: theme.textTheme.labelSmall),
+                        ),
+                        Expanded(
+                          child: Text('CANT.',
+                              textAlign: TextAlign.right,
+                              style: theme.textTheme.labelSmall),
+                        ),
+                        Expanded(
+                          flex: 3,
+                          child: Text('SUBTOTAL',
+                              textAlign: TextAlign.right,
+                              style: theme.textTheme.labelSmall),
+                        ),
+                      ],
+                    ),
+                    for (final item in cotizacion.items) ...[
+                      Divider(height: 22, color: palette.border),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            flex: 4,
+                            child: Text(item.descripcion,
+                                style: theme.textTheme.bodyLarge),
+                          ),
+                          Expanded(
+                            child: Text('${item.cantidad}',
+                                textAlign: TextAlign.right,
+                                style: theme.textTheme.bodyLarge),
+                          ),
+                          Expanded(
+                            flex: 3,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(formatCop(item.valorUnitario),
+                                    style: theme.textTheme.bodySmall),
+                                const SizedBox(height: 2),
+                                Text(formatCop(item.subtotal),
+                                    style: theme.textTheme.titleMedium
+                                        ?.copyWith(fontSize: 15)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    Divider(height: 24, color: palette.border),
+                    Row(
+                      children: [
+                        Expanded(
+                          child:
+                              Text('Total', style: theme.textTheme.titleMedium),
+                        ),
+                        Text(
+                          formatCop(cotizacion.total),
+                          style: theme.textTheme.titleLarge?.copyWith(
+                            color:
+                                palette.isDark ? palette.link : palette.header,
+                            fontSize: 21,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -2768,86 +2327,42 @@ class _ItemRow extends StatelessWidget {
   }
 }
 
-// ====================================================================
-// Features/quotes/presentation/pages/new_quote_page.dart
-// ====================================================================
-
-/// Armado de una cotización: catálogo de productos con buscador, ítems
-/// agregados y un único formulario para llanta nueva o reencauche.
-/// Solo UI, sin backend.
-class NewQuotePage extends StatefulWidget {
-  const NewQuotePage({super.key});
+/// Nueva cotización: dos formularios distintos según el tipo, tal como
+/// en el diseño. Solo visualización: al guardar muestra un aviso.
+class NuevaCotizacionScreen extends StatefulWidget {
+  const NuevaCotizacionScreen({super.key});
 
   @override
-  State<NewQuotePage> createState() => _NewQuotePageState();
+  State<NuevaCotizacionScreen> createState() => _NuevaCotizacionScreenState();
 }
 
-class _NewQuotePageState extends State<NewQuotePage> {
-  final TextEditingController _search = TextEditingController();
+class _NuevaCotizacionScreenState extends State<NuevaCotizacionScreen> {
+  bool _reencauche = false;
+  int _pago = 0;
 
-  /// Ítems agregados: producto -> cantidad.
-  final Map<Product, int> _cart = {};
-
-  int _paymentMethod = 0;
-  String _query = '';
-
-  List<Product> get _results {
-    final q = _query.trim().toLowerCase();
-    if (q.isEmpty) return mockProducts;
-    return [
-      for (final p in mockProducts)
-        if ('${p.name} ${p.brand} ${p.size} ${p.typeLabel}'
-            .toLowerCase()
-            .contains(q))
-          p,
-    ];
-  }
-
-  int get _total => _cart.entries
-      .fold(0, (sum, e) => sum + e.key.price * e.value);
+  final TextEditingController _marca = TextEditingController();
+  final TextEditingController _ancho = TextEditingController();
+  final TextEditingController _perfil = TextEditingController();
+  final TextEditingController _rin = TextEditingController();
+  final TextEditingController _medida = TextEditingController();
+  final TextEditingController _tipoReencauche = TextEditingController();
+  final TextEditingController _cantidad = TextEditingController(text: '1');
+  final TextEditingController _valor = TextEditingController();
 
   @override
   void dispose() {
-    _search.dispose();
+    _marca.dispose();
+    _ancho.dispose();
+    _perfil.dispose();
+    _rin.dispose();
+    _medida.dispose();
+    _tipoReencauche.dispose();
+    _cantidad.dispose();
+    _valor.dispose();
     super.dispose();
   }
 
-  void _add(Product product) {
-    setState(() => _cart[product] = (_cart[product] ?? 0) + 1);
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: Text('${product.name} agregado'),
-          duration: const Duration(milliseconds: 900),
-        ),
-      );
-  }
-
-  void _remove(Product product) {
-    setState(() {
-      final next = (_cart[product] ?? 0) - 1;
-      if (next <= 0) {
-        _cart.remove(product);
-      } else {
-        _cart[product] = next;
-      }
-    });
-  }
-
-  Future<void> _addCustomProduct() async {
-    final result = await showModalBottomSheet<(Product, int)>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => const _ProductFormSheet(),
-    );
-    if (result == null || !mounted) return;
-    final (product, quantity) = result;
-    setState(() => _cart[product] = (_cart[product] ?? 0) + quantity);
-  }
-
-  void _save() {
+  void _guardar() {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
@@ -2859,314 +2374,153 @@ class _NewQuotePageState extends State<NewQuotePage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final palette = context.palette;
-    final results = _results;
 
-    return Scaffold(
-      backgroundColor: palette.background,
-      body: Column(
-        children: [
-          const MiraHeader(title: 'Nueva cotización'),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-              children: [
-                TextField(
-                  controller: _search,
-                  onChanged: (value) => setState(() => _query = value),
-                  style: theme.textTheme.bodyLarge,
-                  decoration: InputDecoration(
-                    hintText: 'Buscar producto, marca o medida',
-                    prefixIcon: const Icon(Icons.search),
-                    suffixIcon: _query.isEmpty
-                        ? null
-                        : IconButton(
-                            tooltip: 'Limpiar',
-                            icon: const Icon(Icons.close),
-                            onPressed: () {
-                              _search.clear();
-                              setState(() => _query = '');
-                            },
-                          ),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text('PRODUCTOS DISPONIBLES',
-                          style: theme.textTheme.labelSmall),
-                    ),
-                    Text('${results.length}',
-                        style: theme.textTheme.labelSmall),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                if (results.isEmpty)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 24),
-                    child: Text(
-                      'No hay productos que coincidan con la búsqueda.',
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.bodyMedium,
+    return Column(
+      children: [
+        const MiraHeader(title: 'Nueva cotización'),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: _TabTipo(
+                      label: 'Llanta nueva',
+                      icon: Icons.trip_origin,
+                      selected: !_reencauche,
+                      onTap: () => setState(() => _reencauche = false),
                     ),
                   ),
-                for (final product in results) ...[
-                  _ProductCard(
-                    product: product,
-                    quantity: _cart[product] ?? 0,
-                    onAdd: () => _add(product),
-                    onRemove: () => _remove(product),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _TabTipo(
+                      label: 'Reencauche',
+                      icon: Icons.autorenew,
+                      selected: _reencauche,
+                      onTap: () => setState(() => _reencauche = true),
+                    ),
                   ),
-                  const SizedBox(height: 10),
                 ],
-                const SizedBox(height: 6),
-                CustomButton.outlined(
-                  label: 'Agregar producto personalizado',
-                  icon: Icons.tune,
-                  onPressed: _addCustomProduct,
+              ),
+              const SizedBox(height: 24),
+              Text(
+                _reencauche
+                    ? 'DETALLES DEL REENCAUCHE'
+                    : 'ESPECIFICACIONES DEL PRODUCTO',
+                style: theme.textTheme.labelSmall,
+              ),
+              const SizedBox(height: 14),
+              if (!_reencauche) ...[
+                CampoTexto(
+                  label: 'Marca / Modelo',
+                  hint: 'Michelin Energy XM2',
+                  controller: _marca,
                 ),
-                const SizedBox(height: 24),
-                Text('PRODUCTOS AGREGADOS',
-                    style: theme.textTheme.labelSmall),
-                const SizedBox(height: 12),
-                _CartSummary(cart: _cart, total: _total),
-                const SizedBox(height: 24),
-                Text('MÉTODO DE PAGO', style: theme.textTheme.labelSmall),
-                const SizedBox(height: 12),
+                const SizedBox(height: 16),
                 Row(
-                  children: [
-                    for (var i = 0; i < 2; i++) ...[
-                      if (i > 0) const SizedBox(width: 12),
-                      Expanded(
-                        child: SelectableTab(
-                          label: i == 0 ? 'Crédito' : 'Contado',
-                          selected: _paymentMethod == i,
-                          onTap: () => setState(() => _paymentMethod = i),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-                const SizedBox(height: 28),
-                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(
-                      child: CustomButton.outlined(
-                        label: 'Cancelar',
-                        onPressed: () => Navigator.of(context).pop(),
+                      child: CampoTexto(
+                        label: 'Ancho (mm)',
+                        hint: '205',
+                        controller: _ancho,
+                        keyboardType: TextInputType.number,
                       ),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
-                      child: CustomButton(
-                        label: 'Guardar cotización',
-                        onPressed: _cart.isEmpty ? null : _save,
+                      child: CampoTexto(
+                        label: 'Perfil (%)',
+                        hint: '65',
+                        controller: _perfil,
+                        keyboardType: TextInputType.number,
                       ),
                     ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-      bottomNavigationBar: const MiraTabBar(),
-    );
-  }
-}
-
-/// Tarjeta de producto del catálogo con su botón de agregar.
-class _ProductCard extends StatelessWidget {
-  const _ProductCard({
-    required this.product,
-    required this.quantity,
-    required this.onAdd,
-    required this.onRemove,
-  });
-
-  final Product product;
-  final int quantity;
-  final VoidCallback onAdd;
-  final VoidCallback onRemove;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final palette = context.palette;
-    final selected = quantity > 0;
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: palette.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: selected ? AppColors.accent : palette.border,
-          width: selected ? 1.6 : 1,
-        ),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: palette.iconTileBg,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(
-              product.retread ? Icons.autorenew : Icons.trip_origin,
-              color: palette.iconTileFg,
-              size: 22,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  product.name,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.titleMedium,
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  '${product.brand} · ${product.size} · '
-                  'stock ${product.stock}',
-                  style: theme.textTheme.bodySmall,
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 6,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    StatusChip(
-                      label: product.typeLabel,
-                      tone: StatusTone.neutral,
-                    ),
-                    Text(
-                      formatCop(product.price),
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontSize: 15,
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          if (selected)
-            Row(
-              children: [
-                IconButton(
-                  tooltip: 'Quitar uno',
-                  onPressed: onRemove,
-                  icon: const Icon(Icons.remove_circle_outline),
-                ),
-                Text('$quantity', style: theme.textTheme.titleMedium),
-                IconButton(
-                  tooltip: 'Agregar otro',
-                  onPressed: onAdd,
-                  icon: const Icon(Icons.add_circle, color: AppColors.accent),
-                ),
-              ],
-            )
-          else
-            ElevatedButton(
-              onPressed: onAdd,
-              style: ElevatedButton.styleFrom(
-                minimumSize: const Size(0, 40),
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                textStyle: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              child: const Text('Agregar'),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Resumen de los productos agregados a la cotización.
-class _CartSummary extends StatelessWidget {
-  const _CartSummary({required this.cart, required this.total});
-
-  final Map<Product, int> cart;
-  final int total;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final palette = context.palette;
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: palette.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: palette.border),
-      ),
-      child: cart.isEmpty
-          ? Text(
-              'Todavía no has agregado productos.',
-              style: theme.textTheme.bodyMedium,
-            )
-          : Column(
-              children: [
-                for (final entry in cart.entries) ...[
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          '${entry.value} × ${entry.key.name}',
-                          style: theme.textTheme.bodyLarge,
-                        ),
-                      ),
-                      Text(
-                        formatCop(entry.key.price * entry.value),
-                        style: theme.textTheme.titleMedium
-                            ?.copyWith(fontSize: 15),
-                      ),
-                    ],
-                  ),
-                  Divider(height: 18, color: palette.border),
-                ],
-                Row(
-                  children: [
+                    const SizedBox(width: 12),
                     Expanded(
-                      child:
-                          Text('Total', style: theme.textTheme.titleMedium),
-                    ),
-                    Text(
-                      formatCop(total),
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        color: palette.isDark
-                            ? AppColors.info
-                            : palette.header,
+                      child: CampoTexto(
+                        label: 'Rin (pulg)',
+                        hint: '15',
+                        controller: _rin,
+                        keyboardType: TextInputType.number,
                       ),
                     ),
                   ],
                 ),
+              ] else ...[
+                CampoTexto(
+                  label: 'Medida de la llanta',
+                  hint: '11R22.5',
+                  controller: _medida,
+                ),
+                const SizedBox(height: 16),
+                CampoTexto(
+                  label: 'Tipo de reencauche',
+                  hint: 'Ej: Radial, Convencional',
+                  controller: _tipoReencauche,
+                ),
               ],
-            ),
+              const SizedBox(height: 16),
+              CampoTexto(
+                label: 'Cantidad',
+                controller: _cantidad,
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 16),
+              CampoTexto(
+                label: 'Valor unitario (COP)',
+                hint: _reencauche ? '225000' : '280000',
+                controller: _valor,
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 24),
+              Text('MÉTODO DE PAGO', style: theme.textTheme.labelSmall),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  for (var i = 0; i < 2; i++) ...[
+                    if (i > 0) const SizedBox(width: 12),
+                    Expanded(
+                      child: _TabTipo(
+                        label: i == 0 ? 'Crédito' : 'Contado',
+                        selected: _pago == i,
+                        onTap: () => setState(() => _pago = i),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 26),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('Cancelar'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: _guardar,
+                      child: const Text('Guardar cotización'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
 
-/// Pestaña seleccionable reutilizada por el método de pago y por el tipo
-/// de producto del formulario.
-class SelectableTab extends StatelessWidget {
-  const SelectableTab({
-    super.key,
+/// Pestaña/segmento seleccionable de los formularios.
+class _TabTipo extends StatelessWidget {
+  const _TabTipo({
     required this.label,
     required this.selected,
     required this.onTap,
@@ -3181,16 +2535,25 @@ class SelectableTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = context.palette;
-    final Color fg = selected ? palette.textPrimary : palette.textSecondary;
+    final bool solid = selected && icon != null;
+    final Color fg = solid
+        ? palette.onHeader
+        : selected
+            ? palette.textPrimary
+            : palette.textSecondary;
 
     return Material(
-      color: selected ? palette.surfaceAlt : palette.surface,
+      color: solid
+          ? palette.header
+          : selected
+              ? palette.surfaceAlt
+              : palette.surface,
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(12),
         child: Container(
-          height: 52,
+          height: 50,
           alignment: Alignment.center,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
@@ -3214,8 +2577,7 @@ class SelectableTab extends StatelessWidget {
                   style: TextStyle(
                     color: fg,
                     fontSize: 15,
-                    fontWeight:
-                        selected ? FontWeight.w700 : FontWeight.w500,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                   ),
                 ),
               ],
@@ -3227,367 +2589,135 @@ class SelectableTab extends StatelessWidget {
   }
 }
 
-/// Formulario único para llanta nueva y reencauche: solo cambia el tipo
-/// seleccionado, los campos son los mismos. Devuelve el producto y la
-/// cantidad a agregar.
-class _ProductFormSheet extends StatefulWidget {
-  const _ProductFormSheet();
-
-  @override
-  State<_ProductFormSheet> createState() => _ProductFormSheetState();
-}
-
-class _ProductFormSheetState extends State<_ProductFormSheet> {
-  final TextEditingController _brand = TextEditingController();
-  final TextEditingController _width = TextEditingController();
-  final TextEditingController _profile = TextEditingController();
-  final TextEditingController _rim = TextEditingController();
-  final TextEditingController _quantity = TextEditingController(text: '1');
-  final TextEditingController _price = TextEditingController();
-
-  bool _retread = false;
-
-  @override
-  void dispose() {
-    _brand.dispose();
-    _width.dispose();
-    _profile.dispose();
-    _rim.dispose();
-    _quantity.dispose();
-    _price.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    final name = _brand.text.trim().isEmpty
-        ? (_retread ? 'Reencauche personalizado' : 'Llanta personalizada')
-        : _brand.text.trim();
-    final size = [
-      _width.text.trim(),
-      _profile.text.trim(),
-      _rim.text.trim(),
-    ].where((v) => v.isNotEmpty).join('/');
-
-    final product = Product(
-      name: name,
-      brand: 'Personalizado',
-      size: size.isEmpty ? 'Sin medida' : size,
-      price: int.tryParse(_price.text.trim()) ?? 0,
-      retread: _retread,
-    );
-    final quantity = int.tryParse(_quantity.text.trim()) ?? 1;
-    Navigator.of(context).pop((product, quantity < 1 ? 1 : quantity));
-  }
+/// Listado de carteras. Único módulo con funcionalidad real.
+class CarteraScreen extends StatelessWidget {
+  const CarteraScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final palette = context.palette;
+    final store = CarteraStore.instance;
 
-    return Padding(
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).viewInsets.bottom,
-      ),
-      child: Container(
-        decoration: BoxDecoration(
-          color: palette.background,
-          borderRadius: const BorderRadius.vertical(
-            top: Radius.circular(22),
-          ),
-          border: Border.all(color: palette.border),
-        ),
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Center(
-                child: Container(
-                  width: 44,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: palette.border,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text('Producto personalizado',
-                  style: theme.textTheme.titleLarge),
-              const SizedBox(height: 4),
-              Text(
-                'Los mismos campos sirven para llanta nueva y reencauche.',
-                style: theme.textTheme.bodyMedium,
-              ),
-              const SizedBox(height: 18),
-              Row(
-                children: [
-                  Expanded(
-                    child: SelectableTab(
-                      label: 'Llanta nueva',
-                      icon: Icons.trip_origin,
-                      selected: !_retread,
-                      onTap: () => setState(() => _retread = false),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: SelectableTab(
-                      label: 'Reencauche',
-                      icon: Icons.autorenew,
-                      selected: _retread,
-                      onTap: () => setState(() => _retread = true),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 18),
-              CustomTextField(
-                label: 'Marca / Modelo',
-                hint: 'Michelin Energy XM2',
-                controller: _brand,
-              ),
-              const SizedBox(height: 16),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: CustomTextField(
-                      label: 'Ancho (mm)',
-                      hint: '205',
-                      controller: _width,
-                      keyboardType: TextInputType.number,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: CustomTextField(
-                      label: 'Perfil (%)',
-                      hint: '65',
-                      controller: _profile,
-                      keyboardType: TextInputType.number,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: CustomTextField(
-                      label: 'Rin (pulg)',
-                      hint: '15',
-                      controller: _rim,
-                      keyboardType: TextInputType.number,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: CustomTextField(
-                      label: 'Cantidad',
-                      controller: _quantity,
-                      keyboardType: TextInputType.number,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    flex: 2,
-                    child: CustomTextField(
-                      label: 'Valor unitario (COP)',
-                      hint: '280000',
-                      controller: _price,
-                      keyboardType: TextInputType.number,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 22),
-              Row(
-                children: [
-                  Expanded(
-                    child: CustomButton.outlined(
-                      label: 'Cancelar',
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: CustomButton(
-                      label: 'Agregar',
-                      onPressed: _submit,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ====================================================================
-// Features/credits/presentation/pages/credits_list_page.dart
-// ====================================================================
-
-/// Listado de créditos del cliente. Datos mock, sin backend.
-class CreditsListPage extends StatelessWidget {
-  const CreditsListPage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final palette = context.palette;
-
-    return Scaffold(
-      backgroundColor: palette.background,
-      body: Column(
-        children: [
-          const MiraHeader(title: 'Mis créditos'),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+    return Column(
+      children: [
+        const MiraHeader(title: 'Mi Cartera', showBack: false),
+        Expanded(
+          child: AnimatedBuilder(
+            animation: store,
+            builder: (context, _) => ListView(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
               children: [
-                Text('${mockCredits.length} CRÉDITOS',
+                Text('${store.carteras.length} CARTERAS',
                     style: theme.textTheme.labelSmall),
                 const SizedBox(height: 12),
-                for (final credit in mockCredits) ...[
-                  _CreditCard(credit: credit),
+                for (final cartera in store.carteras) ...[
+                  _CarteraCard(cartera: cartera),
                   const SizedBox(height: 12),
                 ],
               ],
             ),
           ),
-        ],
-      ),
-      bottomNavigationBar: const MiraTabBar(),
+        ),
+      ],
     );
   }
 }
 
-class _CreditCard extends StatelessWidget {
-  const _CreditCard({required this.credit});
+class _CarteraCard extends StatelessWidget {
+  const _CarteraCard({required this.cartera});
 
-  final Credit credit;
+  final Cartera cartera;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final palette = context.palette;
-    final bool overdue = credit.status == CreditStatus.vencido;
 
-    return Material(
-      color: palette.surface,
-      borderRadius: BorderRadius.circular(16),
-      child: InkWell(
-        onTap: () => Navigator.of(context)
-            .pushNamed(AppRoutes.creditDetail, arguments: credit),
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: palette.border),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    return MiraCard(
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => CarteraDetalleScreen(cartera: cartera),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(credit.code,
-                        style: theme.textTheme.titleMedium),
-                  ),
-                  StatusChip(
-                    label: credit.status.label,
-                    tone: credit.status.tone,
-                  ),
-                ],
+              Expanded(
+                child: Text(cartera.codigo, style: theme.textTheme.titleMedium),
               ),
-              const SizedBox(height: 4),
-              Text('Vence: ${credit.dueDate}',
-                  style: theme.textTheme.bodySmall),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: RichText(
-                      text: TextSpan(
-                        style: theme.textTheme.bodyMedium,
-                        children: [
-                          const TextSpan(text: 'Pendiente: '),
-                          TextSpan(
-                            text: formatCop(credit.pending),
-                            style: theme.textTheme.titleMedium,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  Text('Total: ${formatCop(credit.total)}',
-                      style: theme.textTheme.bodySmall),
-                ],
-              ),
-              const SizedBox(height: 10),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: LinearProgressIndicator(
-                  value: credit.progress,
-                  minHeight: 7,
-                  backgroundColor: palette.trackBg,
-                  valueColor: AlwaysStoppedAnimation<Color>(
-                    overdue ? AppColors.danger : palette.header,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '${credit.progressPercent}% abonado · Cuota: '
-                '${formatCop(credit.monthlyFee)} / mes',
-                style: theme.textTheme.bodySmall,
+              EstadoChip(
+                label: cartera.estado,
+                tono: cartera.vencida ? EstadoTono.error : EstadoTono.exito,
               ),
             ],
           ),
-        ),
+          const SizedBox(height: 4),
+          Text('Vence: ${cartera.vence}', style: theme.textTheme.bodySmall),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: RichText(
+                  overflow: TextOverflow.ellipsis,
+                  text: TextSpan(
+                    style: theme.textTheme.bodyMedium,
+                    children: [
+                      const TextSpan(text: 'Pendiente: '),
+                      TextSpan(
+                        text: formatCop(cartera.pendiente),
+                        style: theme.textTheme.titleMedium,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text('Total: ${formatCop(cartera.total)}',
+                  style: theme.textTheme.bodySmall),
+            ],
+          ),
+          const SizedBox(height: 10),
+          BarraProgreso(
+            value: cartera.progreso,
+            height: 7,
+            color: cartera.vencida ? AppColors.danger : palette.header,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '${cartera.porcentaje}% abonado · Cuota: '
+            '${formatCop(cartera.cuotaMensual)} / mes',
+            style: theme.textTheme.bodySmall,
+          ),
+        ],
       ),
     );
   }
 }
 
-// ====================================================================
-// Features/credits/presentation/pages/credit_detail_page.dart
-// ====================================================================
+/// Detalle de una cartera con accesos a abono e historial.
+class CarteraDetalleScreen extends StatelessWidget {
+  const CarteraDetalleScreen({super.key, required this.cartera});
 
-/// Detalle de un crédito: saldo, avance y accesos a abonos.
-class CreditDetailPage extends StatelessWidget {
-  const CreditDetailPage({super.key, required this.credit});
-
-  final Credit credit;
+  final Cartera cartera;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final palette = context.palette;
+    final store = CarteraStore.instance;
 
-    return Scaffold(
-      backgroundColor: palette.background,
-      body: Column(
-        children: [
-          MiraHeader(title: credit.code),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+    return Column(
+      children: [
+        MiraHeader(title: cartera.codigo),
+        Expanded(
+          child: AnimatedBuilder(
+            animation: store,
+            builder: (context, _) => ListView(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
               children: [
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: palette.surface,
-                    borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: palette.border),
-                  ),
+                MiraCard(
+                  padding: const EdgeInsets.all(18),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -3597,40 +2727,37 @@ class CreditDetailPage extends StatelessWidget {
                             child: Text('Saldo pendiente',
                                 style: theme.textTheme.bodyMedium),
                           ),
-                          StatusChip(
-                            label: credit.status.label,
-                            tone: credit.status.tone,
+                          EstadoChip(
+                            label: cartera.estado,
+                            tono: cartera.vencida
+                                ? EstadoTono.error
+                                : EstadoTono.exito,
                           ),
                         ],
                       ),
                       const SizedBox(height: 8),
-                      Text(formatCop(credit.pending),
+                      Text(formatCop(cartera.pendiente),
                           style: theme.textTheme.headlineLarge),
                       const SizedBox(height: 16),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: LinearProgressIndicator(
-                          value: credit.progress,
-                          minHeight: 8,
-                          backgroundColor: palette.trackBg,
-                          valueColor: const AlwaysStoppedAnimation<Color>(
-                            AppColors.accent,
-                          ),
-                        ),
+                      BarraProgreso(
+                        value: cartera.progreso,
+                        color: cartera.vencida
+                            ? AppColors.danger
+                            : AppColors.accent,
                       ),
                       const SizedBox(height: 18),
                       Row(
                         children: [
                           Expanded(
-                            child: _Fact(
+                            child: DatoCompacto(
                               label: 'Valor total',
-                              value: formatCop(credit.total),
+                              value: formatCop(cartera.total),
                             ),
                           ),
                           Expanded(
-                            child: _Fact(
+                            child: DatoCompacto(
                               label: 'Abonado',
-                              value: formatCop(credit.paid),
+                              value: formatCop(cartera.abonado),
                             ),
                           ),
                         ],
@@ -3639,16 +2766,15 @@ class CreditDetailPage extends StatelessWidget {
                       Row(
                         children: [
                           Expanded(
-                            child: _Fact(
+                            child: DatoCompacto(
                               label: 'Cuota mensual',
-                              value:
-                                  '${formatCop(credit.monthlyFee)} / mes',
+                              value: '${formatCop(cartera.cuotaMensual)} / mes',
                             ),
                           ),
                           Expanded(
-                            child: _Fact(
+                            child: DatoCompacto(
                               label: 'Inicio',
-                              value: credit.startDate,
+                              value: cartera.inicio,
                             ),
                           ),
                         ],
@@ -3657,15 +2783,15 @@ class CreditDetailPage extends StatelessWidget {
                       Row(
                         children: [
                           Expanded(
-                            child: _Fact(
+                            child: DatoCompacto(
                               label: 'Vence',
-                              value: credit.dueDate,
+                              value: cartera.vence,
                             ),
                           ),
                           Expanded(
-                            child: _Fact(
+                            child: DatoCompacto(
                               label: 'Progreso',
-                              value: '${credit.progressPercent}%',
+                              value: '${cartera.porcentaje}%',
                             ),
                           ),
                         ],
@@ -3673,153 +2799,202 @@ class CreditDetailPage extends StatelessWidget {
                     ],
                   ),
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 18),
                 Row(
                   children: [
                     Expanded(
-                      child: CustomButton(
-                        label: 'Registrar abono',
-                        onPressed: () => Navigator.of(context).pushNamed(
-                          AppRoutes.newPayment,
-                          arguments: credit,
-                        ),
+                      child: ElevatedButton(
+                        onPressed: cartera.pendiente == 0
+                            ? null
+                            : () => Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    builder: (_) =>
+                                        RegistrarAbonoScreen(cartera: cartera),
+                                  ),
+                                ),
+                        child: const Text('Registrar abono'),
                       ),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
-                      child: CustomButton.outlined(
-                        label: 'Ver historial',
-                        onPressed: () => Navigator.of(context).pushNamed(
-                          AppRoutes.paymentsHistory,
-                          arguments: credit,
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => HistorialAbonosScreen(
+                              cartera: cartera,
+                            ),
+                          ),
                         ),
+                        child: const Text('Ver historial'),
                       ),
                     ),
                   ],
                 ),
+                if (cartera.pendiente == 0) ...[
+                  const SizedBox(height: 14),
+                  Text(
+                    'Esta cartera ya está pagada por completo.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ],
               ],
             ),
           ),
-        ],
-      ),
-      bottomNavigationBar: const MiraTabBar(),
-    );
-  }
-}
-
-class _Fact extends StatelessWidget {
-  const _Fact({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: theme.textTheme.bodySmall),
-        const SizedBox(height: 2),
-        Text(value, style: theme.textTheme.titleMedium),
+        ),
       ],
     );
   }
 }
 
-// ====================================================================
-// Features/credits/presentation/pages/new_payment_page.dart
-// ====================================================================
+/// Registrar abono: el único formulario que cambia datos de verdad.
+class RegistrarAbonoScreen extends StatefulWidget {
+  const RegistrarAbonoScreen({super.key, required this.cartera});
 
-/// Registro de un abono. Solo UI: no sube archivos ni guarda nada.
-class NewPaymentPage extends StatefulWidget {
-  const NewPaymentPage({super.key, this.credit});
-
-  final Credit? credit;
+  final Cartera cartera;
 
   @override
-  State<NewPaymentPage> createState() => _NewPaymentPageState();
+  State<RegistrarAbonoScreen> createState() => _RegistrarAbonoScreenState();
 }
 
-class _NewPaymentPageState extends State<NewPaymentPage> {
-  final TextEditingController _amount = TextEditingController();
-  int _method = 0;
-  bool _hasReceipt = false;
+class _RegistrarAbonoScreenState extends State<RegistrarAbonoScreen> {
+  static const List<String> metodos = [
+    'Transferencia',
+    'Efectivo',
+    'Nequi',
+    'Daviplata',
+  ];
+
+  final TextEditingController _monto = TextEditingController();
+  int _metodo = 0;
+  bool _comprobante = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _monto.addListener(() => setState(() {}));
+  }
 
   @override
   void dispose() {
-    _amount.dispose();
+    _monto.dispose();
     super.dispose();
   }
 
-  void _save() {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        const SnackBar(content: Text('Abono registrado (demo)')),
-      );
-    Navigator.of(context).pop();
+  int get _valor => int.tryParse(_monto.text.trim()) ?? 0;
+
+  bool get _valido => _valor > 0 && _valor <= widget.cartera.pendiente;
+
+  void _guardar() {
+    final monto = _valor;
+    CarteraStore.instance.registrarAbono(
+      cartera: widget.cartera,
+      monto: monto,
+      metodo: metodos[_metodo],
+    );
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute<void>(
+        builder: (_) => AbonoConfirmadoScreen(monto: monto),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final palette = context.palette;
+    final excede = _valor > widget.cartera.pendiente;
 
-    return Scaffold(
-      backgroundColor: palette.background,
-      body: Column(
-        children: [
-          const MiraHeader(title: 'Registrar abono'),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 20, 16, 24),
-              children: [
-                CustomTextField(
-                  label: 'Monto del abono (COP)',
-                  hint: '350000',
-                  controller: _amount,
-                  keyboardType: TextInputType.number,
+    return Column(
+      children: [
+        const MiraHeader(title: 'Registrar abono'),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 18, 16, 20),
+            children: [
+              CampoTexto(
+                label: 'Monto del abono (COP)',
+                hint: '350000',
+                controller: _monto,
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                excede
+                    ? 'El abono supera el saldo pendiente '
+                        '(${formatCop(widget.cartera.pendiente)}).'
+                    : 'Saldo pendiente: '
+                        '${formatCop(widget.cartera.pendiente)}',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: excede ? AppColors.danger : palette.textMuted,
                 ),
-                const SizedBox(height: 18),
-                Text('Método de pago', style: theme.textTheme.labelLarge),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    for (var i = 0; i < paymentMethods.length; i++) ...[
-                      if (i > 0) const SizedBox(width: 8),
-                      Expanded(
-                        child: _MethodTab(
-                          label: paymentMethods[i],
-                          selected: i == _method,
-                          onTap: () => setState(() => _method = i),
-                        ),
+              ),
+              const SizedBox(height: 18),
+              Text('Método de pago', style: theme.textTheme.labelLarge),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  for (var i = 0; i < metodos.length; i++) ...[
+                    if (i > 0) const SizedBox(width: 8),
+                    Expanded(
+                      child: _ChipMetodo(
+                        label: metodos[i],
+                        selected: i == _metodo,
+                        onTap: () => setState(() => _metodo = i),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 20),
+              Text('Comprobante de pago', style: theme.textTheme.labelLarge),
+              const SizedBox(height: 8),
+              InkWell(
+                onTap: () => setState(() => _comprobante = !_comprobante),
+                borderRadius: BorderRadius.circular(14),
+                child: Container(
+                  height: 116,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: palette.surfaceAlt,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: palette.border),
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        _comprobante
+                            ? Icons.check_circle_outline
+                            : Icons.upload_outlined,
+                        color: palette.textSecondary,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _comprobante
+                            ? 'comprobante.jpg'
+                            : 'Subir comprobante',
+                        style: theme.textTheme.bodyMedium,
                       ),
                     ],
-                  ],
+                  ),
                 ),
-                const SizedBox(height: 20),
-                Text('Comprobante de pago',
-                    style: theme.textTheme.labelLarge),
-                const SizedBox(height: 8),
-                _ReceiptDropZone(
-                  attached: _hasReceipt,
-                  onTap: () => setState(() => _hasReceipt = !_hasReceipt),
-                ),
-                const SizedBox(height: 24),
-                CustomButton(label: 'Guardar abono', onPressed: _save),
-              ],
-            ),
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton(
+                onPressed: _valido ? _guardar : null,
+                child: const Text('Guardar abono'),
+              ),
+            ],
           ),
-        ],
-      ),
-      bottomNavigationBar: const MiraTabBar(),
+        ),
+      ],
     );
   }
 }
 
-class _MethodTab extends StatelessWidget {
-  const _MethodTab({
+class _ChipMetodo extends StatelessWidget {
+  const _ChipMetodo({
     required this.label,
     required this.selected,
     required this.onTap,
@@ -3832,7 +3007,6 @@ class _MethodTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = context.palette;
-
     return Material(
       color: selected ? palette.surfaceAlt : palette.surface,
       borderRadius: BorderRadius.circular(10),
@@ -3842,7 +3016,7 @@ class _MethodTab extends StatelessWidget {
         child: Container(
           height: 46,
           alignment: Alignment.center,
-          padding: const EdgeInsets.symmetric(horizontal: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 4),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
@@ -3853,13 +3027,13 @@ class _MethodTab extends StatelessWidget {
           child: FittedBox(
             fit: BoxFit.scaleDown,
             child: Text(
-            label,
-            maxLines: 1,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-              color: selected ? palette.textPrimary : palette.textSecondary,
-            ),
+              label,
+              maxLines: 1,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                color: selected ? palette.textPrimary : palette.textSecondary,
+              ),
             ),
           ),
         ),
@@ -3868,33 +3042,68 @@ class _MethodTab extends StatelessWidget {
   }
 }
 
-/// Zona punteada para adjuntar el comprobante (simulada).
-class _ReceiptDropZone extends StatelessWidget {
-  const _ReceiptDropZone({required this.attached, required this.onTap});
+/// Confirmación tras registrar un abono.
+class AbonoConfirmadoScreen extends StatelessWidget {
+  const AbonoConfirmadoScreen({super.key, required this.monto});
 
-  final bool attached;
-  final VoidCallback onTap;
+  final int monto;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final palette = context.palette;
 
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
-      child: DottedBorderBox(
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Center(
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              attached ? Icons.check_circle_outline : Icons.upload_outlined,
-              color: palette.textSecondary,
+            TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0.6, end: 1),
+              duration: const Duration(milliseconds: 520),
+              curve: Curves.easeOutBack,
+              builder: (context, scale, child) =>
+                  Transform.scale(scale: scale, child: child),
+              child: Container(
+                width: 82,
+                height: 82,
+                decoration: BoxDecoration(
+                  color: palette.successSoft,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.check,
+                  color: AppColors.success,
+                  size: 40,
+                ),
+              ),
             ),
+            const SizedBox(height: 22),
+            Text('¡Abono registrado!', style: theme.textTheme.titleLarge),
             const SizedBox(height: 8),
-            Text(
-              attached ? 'comprobante.jpg' : 'Subir comprobante',
-              style: theme.textTheme.bodyMedium,
+            RichText(
+              textAlign: TextAlign.center,
+              text: TextSpan(
+                style: theme.textTheme.bodyMedium,
+                children: [
+                  const TextSpan(text: 'Tu abono por '),
+                  TextSpan(
+                    text: formatCop(monto),
+                    style: theme.textTheme.titleMedium,
+                  ),
+                  const TextSpan(text: ' fue enviado para verificación.'),
+                ],
+              ),
+            ),
+            const SizedBox(height: 28),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () =>
+                    Navigator.of(context).popUntil((r) => r.isFirst),
+                child: const Text('Volver a Cartera'),
+              ),
             ),
           ],
         ),
@@ -3903,354 +3112,230 @@ class _ReceiptDropZone extends StatelessWidget {
   }
 }
 
-/// Recuadro con borde discontinuo dibujado a mano.
-class DottedBorderBox extends StatelessWidget {
-  const DottedBorderBox({super.key, required this.child});
+/// Historial de abonos de una cartera.
+class HistorialAbonosScreen extends StatelessWidget {
+  const HistorialAbonosScreen({super.key, required this.cartera});
 
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = context.palette;
-    return CustomPaint(
-      foregroundPainter: _DashedRectPainter(color: palette.border),
-      child: Container(
-        height: 118,
-        width: double.infinity,
-        decoration: BoxDecoration(
-          color: palette.surfaceAlt,
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: child,
-      ),
-    );
-  }
-}
-
-class _DashedRectPainter extends CustomPainter {
-  const _DashedRectPainter({required this.color});
-
-  final Color color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.4;
-    final rect = RRect.fromRectAndRadius(
-      Offset.zero & size,
-      const Radius.circular(14),
-    );
-    final path = Path()..addRRect(rect);
-    for (final metric in path.computeMetrics()) {
-      var distance = 0.0;
-      while (distance < metric.length) {
-        canvas.drawPath(
-          metric.extractPath(distance, distance + 6),
-          paint,
-        );
-        distance += 12;
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _DashedRectPainter oldDelegate) =>
-      oldDelegate.color != color;
-}
-
-// ====================================================================
-// Features/credits/presentation/pages/payments_history_page.dart
-// ====================================================================
-
-/// Historial de abonos de un crédito (o de todos si no se pasa uno).
-class PaymentsHistoryPage extends StatelessWidget {
-  const PaymentsHistoryPage({super.key, this.credit});
-
-  final Credit? credit;
-
-  List<Payment> get _payments =>
-      credit?.payments ??
-      [for (final c in mockCredits) ...c.payments];
-
-  int get _total =>
-      _payments.fold(0, (sum, payment) => sum + payment.amount);
+  final Cartera cartera;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final palette = context.palette;
+    final store = CarteraStore.instance;
 
-    return Scaffold(
-      backgroundColor: palette.background,
-      body: Column(
-        children: [
-          MiraHeader(
-            title: credit == null ? 'Abonos' : 'Historial de abonos',
-          ),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-              children: [
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: palette.header,
-                    borderRadius: BorderRadius.circular(18),
+    return Column(
+      children: [
+        const MiraHeader(title: 'Historial de abonos'),
+        Expanded(
+          child: AnimatedBuilder(
+            animation: store,
+            builder: (context, _) {
+              final abonos = cartera.abonos;
+              final total = abonos.fold(0, (sum, a) => sum + a.monto);
+              return ListView(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+                children: [
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      color: palette.header,
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Total abonado',
+                            style: theme.textTheme.bodyMedium
+                                ?.copyWith(color: palette.onHeaderMuted)),
+                        const SizedBox(height: 6),
+                        Text(formatCop(total),
+                            style: theme.textTheme.headlineLarge
+                                ?.copyWith(color: palette.onHeader)),
+                        const SizedBox(height: 4),
+                        Text('${abonos.length} transacciones',
+                            style: theme.textTheme.bodySmall
+                                ?.copyWith(color: palette.onHeaderMuted)),
+                      ],
+                    ),
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Total abonado',
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: palette.onHeaderMuted,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        formatCop(_total),
-                        style: theme.textTheme.headlineLarge?.copyWith(
-                          color: palette.onHeader,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '${_payments.length} transacciones',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: palette.onHeaderMuted,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 24),
-                Text('TRANSACCIONES', style: theme.textTheme.labelSmall),
-                const SizedBox(height: 12),
-                for (final payment in _payments) ...[
-                  _PaymentTile(payment: payment),
-                  const SizedBox(height: 10),
-                ],
-              ],
-            ),
-          ),
-        ],
-      ),
-      bottomNavigationBar: const MiraTabBar(),
-    );
-  }
-}
-
-class _PaymentTile extends StatelessWidget {
-  const _PaymentTile({required this.payment});
-
-  final Payment payment;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final palette = context.palette;
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: palette.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: palette.border),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(formatCop(payment.amount),
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontSize: 17,
-                    )),
-                const SizedBox(height: 4),
-                Text('${payment.date} · ${payment.method}',
-                    style: theme.textTheme.bodySmall),
-              ],
-            ),
-          ),
-          StatusChip(
-            label: payment.confirmed ? 'Confirmado' : 'Pendiente',
-            tone: payment.confirmed
-                ? StatusTone.success
-                : StatusTone.warning,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ====================================================================
-// Features/deliveries/presentation/pages/deliveries_list_page.dart
-// ====================================================================
-
-/// Listado de entregas. Datos mock, sin backend.
-class DeliveriesListPage extends StatelessWidget {
-  const DeliveriesListPage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final palette = context.palette;
-
-    return Scaffold(
-      backgroundColor: palette.background,
-      body: Column(
-        children: [
-          const MiraHeader(title: 'Entregas'),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-              children: [
-                Text('${mockDeliveries.length} ENTREGAS',
-                    style: theme.textTheme.labelSmall),
-                const SizedBox(height: 12),
-                for (final delivery in mockDeliveries) ...[
-                  _DeliveryCard(delivery: delivery),
+                  const SizedBox(height: 22),
+                  Text('TRANSACCIONES', style: theme.textTheme.labelSmall),
                   const SizedBox(height: 12),
-                ],
-              ],
-            ),
-          ),
-        ],
-      ),
-      bottomNavigationBar: const MiraTabBar(),
-    );
-  }
-}
-
-class _DeliveryCard extends StatelessWidget {
-  const _DeliveryCard({required this.delivery});
-
-  final Delivery delivery;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final palette = context.palette;
-
-    return Material(
-      color: palette.surface,
-      borderRadius: BorderRadius.circular(16),
-      child: InkWell(
-        onTap: () => Navigator.of(context)
-            .pushNamed(AppRoutes.deliveryDetail, arguments: delivery),
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: palette.border),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(delivery.code,
-                        style: theme.textTheme.titleMedium),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${delivery.address} · ${delivery.scheduledDate}',
-                      style: theme.textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 10),
-                    StatusChip(
-                      label: delivery.status.label,
-                      tone: delivery.status.tone,
-                    ),
-                  ],
-                ),
-              ),
-              Icon(Icons.chevron_right, color: palette.textMuted),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ====================================================================
-// Features/deliveries/presentation/pages/delivery_detail_page.dart
-// ====================================================================
-
-/// Detalle de una entrega con su evidencia fotográfica.
-class DeliveryDetailPage extends StatelessWidget {
-  const DeliveryDetailPage({super.key, required this.delivery});
-
-  final Delivery delivery;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final palette = context.palette;
-
-    return Scaffold(
-      backgroundColor: palette.background,
-      body: Column(
-        children: [
-          MiraHeader(title: delivery.code),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: palette.surface,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: palette.border),
-                  ),
-                  child: Column(
-                    children: [
-                      Row(
+                  for (final abono in abonos) ...[
+                    MiraCard(
+                      child: Row(
                         children: [
                           Expanded(
-                            child: Text('Estado de entrega',
-                                style: theme.textTheme.titleMedium),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(formatCop(abono.monto),
+                                    style: theme.textTheme.titleMedium
+                                        ?.copyWith(fontSize: 17)),
+                                const SizedBox(height: 4),
+                                Text('${abono.fecha} · ${abono.metodo}',
+                                    style: theme.textTheme.bodySmall),
+                              ],
+                            ),
                           ),
-                          StatusChip(
-                            label: delivery.status.label,
-                            tone: delivery.status.tone,
+                          EstadoChip(
+                            label: abono.confirmado
+                                ? 'Confirmado'
+                                : 'En verificación',
+                            tono: abono.confirmado
+                                ? EstadoTono.exito
+                                : EstadoTono.aviso,
                           ),
                         ],
                       ),
-                      const SizedBox(height: 14),
-                      _DeliveryInfoRow(
-                        label: 'Cotización',
-                        value: delivery.quoteCode,
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+                ],
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Listado de entregas (solo visualización).
+class EntregasScreen extends StatelessWidget {
+  const EntregasScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final palette = context.palette;
+
+    return Column(
+      children: [
+        const MiraHeader(title: 'Entregas', showBack: false),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+            children: [
+              Text('${mockEntregas.length} ENTREGAS',
+                  style: theme.textTheme.labelSmall),
+              const SizedBox(height: 12),
+              for (final entrega in mockEntregas) ...[
+                MiraCard(
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => EntregaDetalleScreen(entrega: entrega),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(entrega.codigo,
+                                style: theme.textTheme.titleMedium),
+                            const SizedBox(height: 4),
+                            Text(
+                              '${entrega.direccion} · '
+                              '${entrega.fechaProgramada}',
+                              style: theme.textTheme.bodySmall,
+                            ),
+                            const SizedBox(height: 10),
+                            EstadoChip(
+                              label: entrega.estado,
+                              tono: entrega.tono,
+                            ),
+                          ],
+                        ),
                       ),
-                      _DeliveryInfoRow(
-                        label: 'Dirección',
-                        value: delivery.address,
-                      ),
-                      _DeliveryInfoRow(
-                        label: 'Fecha programada',
-                        value: delivery.scheduledDate,
-                      ),
-                      _DeliveryInfoRow(
-                        label: 'Fecha de entrega',
-                        value: delivery.deliveredDate ?? 'Sin entregar',
-                      ),
+                      Icon(Icons.chevron_right, color: palette.textMuted),
                     ],
                   ),
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 12),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Detalle de una entrega: datos, evidencia o motivo de cancelación.
+class EntregaDetalleScreen extends StatelessWidget {
+  const EntregaDetalleScreen({super.key, required this.entrega});
+
+  final Entrega entrega;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final palette = context.palette;
+    final cancelada = entrega.motivoCancelacion != null;
+
+    return Column(
+      children: [
+        MiraHeader(title: entrega.codigo),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+            children: [
+              MiraCard(
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text('Estado de entrega',
+                              style: theme.textTheme.titleMedium),
+                        ),
+                        EstadoChip(label: entrega.estado, tono: entrega.tono),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    FilaDato(label: 'Cotización', value: entrega.cotizacion),
+                    FilaDato(label: 'Dirección', value: entrega.direccion),
+                    FilaDato(
+                      label: 'Fecha programada',
+                      value: entrega.fechaProgramada,
+                    ),
+                    if (entrega.fechaEntrega != null)
+                      FilaDato(
+                        label: 'Fecha de entrega',
+                        value: entrega.fechaEntrega!,
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 22),
+              if (cancelada) ...[
+                Text('MOTIVO DE CANCELACIÓN',
+                    style: theme.textTheme.labelSmall),
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: palette.dangerSoft,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: AppColors.danger),
+                  ),
+                  child: Text(
+                    entrega.motivoCancelacion!,
+                    style: theme.textTheme.bodyLarge
+                        ?.copyWith(color: AppColors.danger),
+                  ),
+                ),
+              ] else ...[
                 Text('EVIDENCIA FOTOGRÁFICA',
                     style: theme.textTheme.labelSmall),
                 const SizedBox(height: 12),
                 Container(
-                  height: 190,
+                  height: 180,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
                     color: palette.surfaceAlt,
@@ -4260,14 +3345,11 @@ class DeliveryDetailPage extends StatelessWidget {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(
-                        Icons.photo_camera_outlined,
-                        size: 34,
-                        color: palette.textMuted,
-                      ),
+                      Icon(Icons.photo_camera_outlined,
+                          size: 32, color: palette.textMuted),
                       const SizedBox(height: 10),
                       Text(
-                        delivery.status == DeliveryStatus.entregado
+                        entrega.fechaEntrega != null
                             ? 'Foto de entrega disponible'
                             : 'Sin evidencia registrada',
                         style: theme.textTheme.bodyMedium,
@@ -4276,311 +3358,253 @@ class DeliveryDetailPage extends StatelessWidget {
                   ),
                 ),
               ],
-            ),
+            ],
           ),
-        ],
-      ),
-      bottomNavigationBar: const MiraTabBar(),
-    );
-  }
-}
-
-class _DeliveryInfoRow extends StatelessWidget {
-  const _DeliveryInfoRow({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            flex: 2,
-            child: Text(label, style: theme.textTheme.bodyMedium),
-          ),
-          Expanded(
-            flex: 3,
-            child: Text(
-              value,
-              textAlign: TextAlign.right,
-              style: theme.textTheme.titleMedium,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ====================================================================
-// Features/profile/presentation/pages/profile_page.dart
-// ====================================================================
-
-/// Perfil del usuario en sesión. Datos de ejemplo, sin backend.
-class ProfilePage extends StatelessWidget {
-  const ProfilePage({super.key, this.role = UserRole.usuario});
-
-  final UserRole role;
-
-  bool get _isAdmin => role == UserRole.administrador;
-
-  String get _name => _isAdmin ? 'Laura González' : 'Carlos Ramírez';
-  String get _email =>
-      _isAdmin ? 'laura.gonzalez@mirallantas.com' : 'carlos.ramirez@email.com';
-
-  List<_ProfileField> get _fields => [
-        _ProfileField('Nombre completo', _name),
-        _ProfileField('Documento', _isAdmin ? '43876521' : '1023456789'),
-        _ProfileField('Correo', _email),
-        _ProfileField('Teléfono', _isAdmin ? '301 987 6543' : '300 456 7890'),
-        _ProfileField(
-          'Dirección',
-          _isAdmin
-              ? 'Cl. 10 #43-15, Medellín, Antioquia'
-              : 'Cra. 45 #80-23, Medellín, Antioquia',
         ),
-        _ProfileField('Rol', role.label),
-      ];
-
-  String get _initials {
-    final parts = _name.split(' ').where((p) => p.isNotEmpty).toList();
-    if (parts.isEmpty) return '';
-    if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
-    return (parts[0].substring(0, 1) + parts[1].substring(0, 1)).toUpperCase();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final palette = context.palette;
-
-    return Scaffold(
-      backgroundColor: palette.background,
-      body: Column(
-        children: [
-          const MiraHeader(title: 'Mi perfil'),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 24, 16, 28),
-              children: [
-                Center(
-                  child: CircleAvatar(
-                    radius: 52,
-                    backgroundColor: palette.header,
-                    child: Text(
-                      _initials,
-                      style: TextStyle(
-                        color: palette.onHeader,
-                        fontSize: 34,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Center(
-                  child: Text(_name, style: theme.textTheme.titleLarge),
-                ),
-                const SizedBox(height: 4),
-                Center(
-                  child: Text(_email, style: theme.textTheme.bodyMedium),
-                ),
-                const SizedBox(height: 28),
-                Text('INFORMACIÓN PERSONAL',
-                    style: theme.textTheme.labelSmall),
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  decoration: BoxDecoration(
-                    color: palette.surface,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: palette.border),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (var i = 0; i < _fields.length; i++) ...[
-                        if (i > 0) Divider(height: 1, color: palette.border),
-                        _ProfileRow(field: _fields[i]),
-                      ],
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 28),
-                CustomButton(
-                  label: 'Editar perfil',
-                  icon: Icons.edit_outlined,
-                  onPressed: () => Navigator.of(context)
-                      .pushNamed(AppRoutes.editProfile, arguments: role),
-                ),
-                const SizedBox(height: 12),
-                CustomButton.outlined(
-                  label: 'Cerrar sesión',
-                  icon: Icons.logout,
-                  onPressed: () => Navigator.of(context)
-                      .pushNamedAndRemoveUntil(
-                          AppRoutes.login, (route) => false),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-      bottomNavigationBar: const MiraTabBar(),
+      ],
     );
   }
 }
 
-class _ProfileField {
-  const _ProfileField(this.label, this.value);
-
-  final String label;
-  final String value;
-}
-
-class _ProfileRow extends StatelessWidget {
-  const _ProfileRow({required this.field});
-
-  final _ProfileField field;
+/// Perfil del cliente con edición en la misma pantalla.
+class PerfilScreen extends StatefulWidget {
+  const PerfilScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            field.label.toUpperCase(),
-            style: theme.textTheme.labelSmall?.copyWith(letterSpacing: 0.8),
-          ),
-          const SizedBox(height: 4),
-          Text(field.value, style: theme.textTheme.bodyLarge),
-        ],
-      ),
-    );
+  State<PerfilScreen> createState() => _PerfilScreenState();
+}
+
+class _PerfilScreenState extends State<PerfilScreen> {
+  final PerfilUsuario _perfil = PerfilUsuario.instance;
+
+  bool _editando = false;
+  late TextEditingController _nombre;
+  late TextEditingController _documento;
+  late TextEditingController _correo;
+  late TextEditingController _telefono;
+  late TextEditingController _direccion;
+
+  @override
+  void initState() {
+    super.initState();
+    _nombre = TextEditingController(text: _perfil.nombre);
+    _documento = TextEditingController(text: _perfil.documento);
+    _correo = TextEditingController(text: _perfil.correo);
+    _telefono = TextEditingController(text: _perfil.telefono);
+    _direccion = TextEditingController(text: _perfil.direccion);
   }
-}
-
-/// Edición de los datos del usuario. Solo UI: al guardar muestra un
-/// aviso y vuelve al perfil.
-class EditProfilePage extends StatefulWidget {
-  const EditProfilePage({super.key, this.role = UserRole.usuario});
-
-  final UserRole role;
-
-  @override
-  State<EditProfilePage> createState() => _EditProfilePageState();
-}
-
-class _EditProfilePageState extends State<EditProfilePage> {
-  late final bool _isAdmin = widget.role == UserRole.administrador;
-
-  late final TextEditingController _name = TextEditingController(
-    text: _isAdmin ? 'Laura González' : 'Carlos Ramírez',
-  );
-  late final TextEditingController _document = TextEditingController(
-    text: _isAdmin ? '43876521' : '1023456789',
-  );
-  late final TextEditingController _email = TextEditingController(
-    text: _isAdmin
-        ? 'laura.gonzalez@mirallantas.com'
-        : 'carlos.ramirez@email.com',
-  );
-  late final TextEditingController _phone = TextEditingController(
-    text: _isAdmin ? '301 987 6543' : '300 456 7890',
-  );
-  late final TextEditingController _address = TextEditingController(
-    text: _isAdmin
-        ? 'Cl. 10 #43-15, Medellín, Antioquia'
-        : 'Cra. 45 #80-23, Medellín, Antioquia',
-  );
 
   @override
   void dispose() {
-    _name.dispose();
-    _document.dispose();
-    _email.dispose();
-    _phone.dispose();
-    _address.dispose();
+    _nombre.dispose();
+    _documento.dispose();
+    _correo.dispose();
+    _telefono.dispose();
+    _direccion.dispose();
     super.dispose();
   }
 
-  void _save() {
+  void _cancelar() {
+    setState(() {
+      _nombre.text = _perfil.nombre;
+      _documento.text = _perfil.documento;
+      _correo.text = _perfil.correo;
+      _telefono.text = _perfil.telefono;
+      _direccion.text = _perfil.direccion;
+      _editando = false;
+    });
+  }
+
+  void _guardar() {
+    setState(() {
+      _perfil.nombre = _nombre.text.trim();
+      _perfil.documento = _documento.text.trim();
+      _perfil.correo = _correo.text.trim();
+      _perfil.telefono = _telefono.text.trim();
+      _perfil.direccion = _direccion.text.trim();
+      _editando = false;
+    });
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
         const SnackBar(content: Text('Perfil actualizado (demo)')),
       );
-    Navigator.of(context).pop();
+  }
+
+  void _cerrarSesion() {
+    Navigator.of(context, rootNavigator: true)
+        .pushNamedAndRemoveUntil(AppRoutes.login, (route) => false);
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final palette = context.palette;
 
-    return Scaffold(
-      backgroundColor: palette.background,
-      body: Column(
-        children: [
-          const MiraHeader(title: 'Editar perfil'),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 20, 16, 24),
+    return Column(
+      children: [
+        const MiraHeader(title: 'Mi perfil', showBack: false),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 22, 16, 20),
+            children: [
+              Center(
+                child: CircleAvatar(
+                  radius: 46,
+                  backgroundColor: palette.header,
+                  child: Text(
+                    _perfil.iniciales,
+                    style: TextStyle(
+                      color: palette.onHeader,
+                      fontSize: 30,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Center(
+                child: Text(_perfil.nombre, style: theme.textTheme.titleLarge),
+              ),
+              const SizedBox(height: 4),
+              Center(
+                child: Text(_perfil.correo, style: theme.textTheme.bodyMedium),
+              ),
+              const SizedBox(height: 24),
+              Text('INFORMACIÓN PERSONAL', style: theme.textTheme.labelSmall),
+              const SizedBox(height: 12),
+              MiraCard(
+                padding: const EdgeInsets.fromLTRB(16, 6, 16, 16),
+                child: _editando ? _formulario() : _lectura(),
+              ),
+              const SizedBox(height: 18),
+              OutlinedButton.icon(
+                onPressed: _cerrarSesion,
+                icon: const Icon(Icons.logout, size: 20),
+                label: const Text('Cerrar sesión'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.danger,
+                  backgroundColor: palette.dangerSoft,
+                  side: const BorderSide(color: AppColors.danger),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _lectura() {
+    final palette = context.palette;
+    final filas = [
+      ('NOMBRE COMPLETO', _perfil.nombre),
+      ('DOCUMENTO', _perfil.documento),
+      ('CORREO', _perfil.correo),
+      ('TELÉFONO', _perfil.telefono),
+      ('DIRECCIÓN', _perfil.direccion),
+    ];
+
+    return Column(
+      children: [
+        for (var i = 0; i < filas.length; i++) ...[
+          if (i > 0) Divider(height: 1, color: palette.border),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                CustomTextField(label: 'Nombre completo', controller: _name),
-                const SizedBox(height: 16),
-                CustomTextField(
-                  label: 'Documento',
-                  controller: _document,
-                  keyboardType: TextInputType.number,
-                ),
-                const SizedBox(height: 16),
-                CustomTextField(
-                  label: 'Correo',
-                  controller: _email,
-                  prefixIcon: Icons.mail_outline,
-                  keyboardType: TextInputType.emailAddress,
-                ),
-                const SizedBox(height: 16),
-                CustomTextField(
-                  label: 'Teléfono',
-                  controller: _phone,
-                  keyboardType: TextInputType.phone,
-                ),
-                const SizedBox(height: 16),
-                CustomTextField(label: 'Dirección', controller: _address),
-                const SizedBox(height: 28),
-                Row(
-                  children: [
-                    Expanded(
-                      child: CustomButton.outlined(
-                        label: 'Cancelar',
-                        onPressed: () => Navigator.of(context).pop(),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: CustomButton(
-                        label: 'Guardar cambios',
-                        onPressed: _save,
-                      ),
-                    ),
-                  ],
+                Text(filas[i].$1,
+                    style: Theme.of(context)
+                        .textTheme
+                        .labelSmall
+                        ?.copyWith(letterSpacing: 0.8)),
+                const SizedBox(height: 4),
+                SizedBox(
+                  width: double.infinity,
+                  child: Text(filas[i].$2,
+                      style: Theme.of(context).textTheme.bodyLarge),
                 ),
               ],
             ),
           ),
         ],
-      ),
-      bottomNavigationBar: const MiraTabBar(),
+        const SizedBox(height: 10),
+        OutlinedButton(
+          onPressed: () => setState(() => _editando = true),
+          child: const Text('Editar perfil'),
+        ),
+      ],
+    );
+  }
+
+  Widget _formulario() {
+    return Column(
+      children: [
+        const SizedBox(height: 10),
+        CampoTexto(label: 'Nombre completo', controller: _nombre),
+        const SizedBox(height: 14),
+        CampoTexto(
+          label: 'Número de documento',
+          controller: _documento,
+          keyboardType: TextInputType.number,
+        ),
+        const SizedBox(height: 14),
+        CampoTexto(
+          label: 'Correo electrónico',
+          controller: _correo,
+          keyboardType: TextInputType.emailAddress,
+        ),
+        const SizedBox(height: 14),
+        CampoTexto(
+          label: 'Teléfono',
+          controller: _telefono,
+          keyboardType: TextInputType.phone,
+        ),
+        const SizedBox(height: 14),
+        CampoTexto(label: 'Dirección', controller: _direccion),
+        const SizedBox(height: 20),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton(
+                onPressed: _cancelar,
+                child: const Text('Cancelar'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: ElevatedButton(
+                onPressed: _guardar,
+                child: const Text('Guardar'),
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }
 
+// ====================================================================
+// 6. Rutas
+// ====================================================================
+
+class AppRoutes {
+  const AppRoutes._();
+
+  static const String splash = '/';
+  static const String login = '/login';
+  static const String recuperar = '/recuperar';
+  static const String home = '/inicio';
+
+  static Route<dynamic> onGenerateRoute(RouteSettings settings) {
+    final Widget page = switch (settings.name) {
+      login => const LoginScreen(),
+      recuperar => const RecuperarScreen(),
+      home => const MainShell(),
+      _ => const SplashScreen(),
+    };
+    return MaterialPageRoute<void>(builder: (_) => page, settings: settings);
+  }
+}

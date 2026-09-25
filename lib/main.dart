@@ -1165,16 +1165,39 @@ const List<Entrega> mockEntregas = [
 ];
 
 /// Datos del cliente en sesión. Editables desde Perfil (en memoria).
+enum RolUsuario { cliente, administrador }
+
 class PerfilUsuario {
   PerfilUsuario._();
 
   static final PerfilUsuario instance = PerfilUsuario._();
 
+  RolUsuario rol = RolUsuario.cliente;
   String nombre = 'Carlos Ramírez';
   String documento = '1023456789';
   String correo = 'carlos.ramirez@email.com';
   String telefono = '300 456 7890';
   String direccion = 'Cra. 45 #80-23, Medellín, Antioquia';
+
+  bool get esAdministrador => rol == RolUsuario.administrador;
+
+  /// Carga los datos mock correspondientes al rol elegido en el login.
+  void cargarDatosDeRol(RolUsuario nuevoRol) {
+    rol = nuevoRol;
+    if (nuevoRol == RolUsuario.administrador) {
+      nombre = 'Ana Torres';
+      documento = '43567890';
+      correo = 'ana.torres@mirallantas.com';
+      telefono = '301 789 2233';
+      direccion = 'Sede administrativa, Cl. 30 #65-10, Medellín, Antioquia';
+    } else {
+      nombre = 'Carlos Ramírez';
+      documento = '1023456789';
+      correo = 'carlos.ramirez@email.com';
+      telefono = '300 456 7890';
+      direccion = 'Cra. 45 #80-23, Medellín, Antioquia';
+    }
+  }
 
   String get iniciales {
     final partes = nombre.split(' ').where((p) => p.isNotEmpty).toList();
@@ -1183,6 +1206,19 @@ class PerfilUsuario {
     return (partes[0].substring(0, 1) + partes[1].substring(0, 1))
         .toUpperCase();
   }
+}
+
+/// Indicadores agregados (mock) que solo ve el rol administrador en Inicio.
+class AdminMetrics {
+  const AdminMetrics._();
+
+  static const int carteraTotalPrestada = 128500000;
+  static const int carteraTotalRecaudada = 76300000;
+  static const int carteraEnMora = 9400000;
+  static const int clientesActivos = 42;
+  static const int cotizacionesDelMes = 57;
+  static const int entregasPendientesTotales = 11;
+  static const int ventasDelMes = 34600000;
 }
 
 /// Láminas del carrusel de Inicio.
@@ -1353,6 +1389,7 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _correo = TextEditingController();
   final TextEditingController _clave = TextEditingController();
+  RolUsuario _rol = RolUsuario.cliente;
 
   @override
   void dispose() {
@@ -1361,7 +1398,10 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  void _entrar() => Navigator.of(context).pushReplacementNamed(AppRoutes.home);
+  void _entrar() {
+    PerfilUsuario.instance.cargarDatosDeRol(_rol);
+    Navigator.of(context).pushReplacementNamed(AppRoutes.home);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1425,7 +1465,16 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 4),
+                  Text('INGRESAR COMO', style: theme.textTheme.labelSmall),
+                  const SizedBox(height: 8),
+                  Center(
+                    child: SelectorRol(
+                      rol: _rol,
+                      onChanged: (r) => setState(() => _rol = r),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
                   ElevatedButton(
                     onPressed: _entrar,
                     child: const Text('Iniciar sesión'),
@@ -1530,6 +1579,44 @@ class _OpcionTema extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Píldora "Cliente / Administrador" del login.
+class SelectorRol extends StatelessWidget {
+  const SelectorRol({super.key, required this.rol, required this.onChanged});
+
+  final RolUsuario rol;
+  final ValueChanged<RolUsuario> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: palette.surfaceAlt,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: palette.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _OpcionTema(
+            label: 'Cliente',
+            icon: Icons.person_outline,
+            selected: rol == RolUsuario.cliente,
+            onTap: () => onChanged(RolUsuario.cliente),
+          ),
+          _OpcionTema(
+            label: 'Administrador',
+            icon: Icons.admin_panel_settings_outlined,
+            selected: rol == RolUsuario.administrador,
+            onTap: () => onChanged(RolUsuario.administrador),
+          ),
+        ],
       ),
     );
   }
@@ -1900,6 +1987,10 @@ class InicioScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 14),
                   if (proximo != null) _CardProximoPago(cartera: proximo),
+                  if (PerfilUsuario.instance.esAdministrador) ...[
+                    const SizedBox(height: 22),
+                    const _PanelAdministrador(),
+                  ],
                   const SizedBox(height: 22),
                   const CarruselInicio(),
                 ],
@@ -2005,6 +2096,95 @@ class _MiniCard extends StatelessWidget {
               style: theme.textTheme.bodySmall),
         ],
       ),
+    );
+  }
+}
+
+/// Panel de indicadores adicionales visible solo para el rol administrador.
+class _PanelAdministrador extends StatelessWidget {
+  const _PanelAdministrador();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('PANEL ADMINISTRATIVO', style: theme.textTheme.labelSmall),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: _MiniCard(
+                icon: Icons.account_balance_wallet_outlined,
+                titulo: 'CARTERA PRESTADA',
+                valor: formatCop(AdminMetrics.carteraTotalPrestada),
+                detalle: 'total en todos los clientes',
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: _MiniCard(
+                icon: Icons.savings_outlined,
+                titulo: 'RECAUDADO',
+                valor: formatCop(AdminMetrics.carteraTotalRecaudada),
+                detalle: 'abonado a la fecha',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            Expanded(
+              child: _MiniCard(
+                icon: Icons.warning_amber_outlined,
+                titulo: 'CARTERA EN MORA',
+                valor: formatCop(AdminMetrics.carteraEnMora),
+                detalle: 'pendiente vencido',
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: _MiniCard(
+                icon: Icons.groups_outlined,
+                titulo: 'CLIENTES ACTIVOS',
+                valor: '${AdminMetrics.clientesActivos}',
+                detalle: 'con cartera vigente',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            Expanded(
+              child: _MiniCard(
+                icon: Icons.description_outlined,
+                titulo: 'COTIZACIONES',
+                valor: '${AdminMetrics.cotizacionesDelMes}',
+                detalle: 'generadas este mes',
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: _MiniCard(
+                icon: Icons.local_shipping_outlined,
+                titulo: 'ENTREGAS',
+                valor: '${AdminMetrics.entregasPendientesTotales}',
+                detalle: 'pendientes en total',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        _MiniCard(
+          icon: Icons.trending_up_outlined,
+          titulo: 'VENTAS DEL MES',
+          valor: formatCop(AdminMetrics.ventasDelMes),
+          detalle: 'facturado en el mes en curso',
+        ),
+      ],
     );
   }
 }
@@ -3216,6 +3396,8 @@ class _PerfilScreenState extends State<PerfilScreen> {
 
   Widget _lectura() {
     final palette = context.palette;
+    final editarPerfilColor =
+        palette.isDark ? AppColors.accent : palette.header;
     final filas = [
       ('NOMBRE COMPLETO', _perfil.nombre),
       ('DOCUMENTO', _perfil.documento),
@@ -3251,6 +3433,10 @@ class _PerfilScreenState extends State<PerfilScreen> {
         const SizedBox(height: 10),
         OutlinedButton(
           onPressed: () => setState(() => _editando = true),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: editarPerfilColor,
+            side: BorderSide(color: editarPerfilColor),
+          ),
           child: const Text('Editar perfil'),
         ),
       ],

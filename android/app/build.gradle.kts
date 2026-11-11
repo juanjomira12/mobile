@@ -47,3 +47,8 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // Tema AppCompat que pide la huella (local_auth) en Android 8 y anteriores.
+    implementation("androidx.appcompat:appcompat:1.7.0")
+}

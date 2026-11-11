@@ -1,5 +1,6 @@
 package com.example.mirallantas
 
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 
-class MainActivity : FlutterActivity()
+// La huella (local_auth) necesita un FragmentActivity.
+class MainActivity : FlutterFragmentActivity()
